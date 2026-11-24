@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>kuka_arctech_adapter</name>
+  <version>0.0.0</version>
+  <description>ROS 2 adapter for the KUKA ArcTech backend.</description>
+  <maintainer email="2523796700@qq.com">Teng Hao</maintainer>
+  <license>UNLICENSED</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>atomic_adapter_interfaces</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>rclcpp_components</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
