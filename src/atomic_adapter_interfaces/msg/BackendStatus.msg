@@ -1,0 +1,9 @@
+builtin_interfaces/Time stamp
+string backend
+bool controller_connected
+string program_state
+string weld_state
+string current_job_id
+string current_program
+string fault_code
+string message

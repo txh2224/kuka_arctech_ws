@@ -1,0 +1,15 @@
+string schema_version
+string instruction_id
+string instance_id
+string correlation_id
+string target_device
+string capability_id
+string action
+string object_json
+string parameter_json
+string constraint_json
+string safety_json
+string result_contract_json
+uint32 timeout_ms
+uint8 priority
+string failure_policy

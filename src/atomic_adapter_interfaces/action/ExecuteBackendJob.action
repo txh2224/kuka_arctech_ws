@@ -1,0 +1,21 @@
+# Goal
+string job_id
+string trace_id
+string backend                # 固定 "kuka_arctech"
+bool dry_run
+AtomicInstruction[] instructions
+---
+# Result
+bool success
+string error_code
+string message
+string backend_job_id
+string artifact_manifest_json
+string result_json
+---
+# Feedback
+uint8 stage
+uint32 current_index
+float32 progress
+string current_instruction_id
+string message
