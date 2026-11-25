@@ -6,7 +6,6 @@
 
 AdapterNode::AdapterNode(const rclcpp::NodeOptions &options)
     : rclcpp::Node("adapter_node", options) {
-
     //这里创建动作Server，绑定回调函数
     execute_action_ = rclcpp_action::create_server<ExecuteBackendJob>(
         this,
@@ -45,13 +44,12 @@ void AdapterNode::execute_job(
 
     std::string error_message;
     //检查当前任务是否合法
-    if (!check_job(*goal, error_message)) {
+    if (!job_validator_.validate(*goal, error_message)) {
         RCLCPP_ERROR(get_logger(), "%s", error_message.c_str());
         result->error_code = "KA_JOB_INVALID";
         result->message = error_message;
     } else {
-        result->error_code = "NOT_IMPLEMENTED";
-        result->message = "KUKA ArcTech 后端执行尚未接入。";
+        //这里是执行任务的逻辑
     }
 
     // 先释放任务槽，客户端收到结果后就可以提交下一单。
@@ -61,30 +59,6 @@ void AdapterNode::execute_job(
         current_job_.reset();
     }
     goal_handle->abort(result);
-}
-
-bool AdapterNode::check_job(const ExecuteBackendJob::Goal &goal, std::string &error_message) {
-    //检查当前任务是否合法
-    error_message.clear();
-
-    if(goal.job_id.empty()) {
-        error_message = "job_id 不能为空。";
-        return false;
-    }
-    if(goal.trace_id.empty()) {
-        error_message = "trace_id 不能为空。";
-        return false;
-    }
-    if(goal.backend != "kuka_arctech") {
-        error_message = "不支持的后端类型：" + goal.backend;
-        return false;
-    }
-    if(goal.instructions.empty()) {
-        error_message = "原子指令序列不能为空。";
-        return false;
-    }
-
-    return true;
 }
 
 //下面三个是动作的回调函数

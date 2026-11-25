@@ -9,6 +9,7 @@ find_package(rclcpp_components REQUIRED)
 
 add_library(adapter_node_component SHARED
   src/adapter_node.cpp
+  src/job_validator.cpp
 )
 target_compile_features(adapter_node_component PRIVATE cxx_std_17)
 target_include_directories(adapter_node_component PRIVATE include)

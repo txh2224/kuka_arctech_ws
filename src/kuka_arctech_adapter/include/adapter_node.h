@@ -1,6 +1,8 @@
 #ifndef ADAPTER_NODE_H
 #define ADAPTER_NODE_H
 
+#include "job_validator.h"
+
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -40,8 +42,6 @@ public:
     );
 
 private:
-    //用于检查当前任务是否合法
-    bool check_job(const ExecuteBackendJob::Goal &goal,std::string &error_message);
     //下面是动作的三个回调函数
     rclcpp_action::GoalResponse goal_callback(
         const rclcpp_action::GoalUUID &,
@@ -53,6 +53,8 @@ private:
     
 
     //成员变量
+
+    JobValidator job_validator_;//检查任务是否合法的对象
 
     //这里定义动作的Server指针
     rclcpp_action::Server<ExecuteBackendJob>::SharedPtr execute_action_;
