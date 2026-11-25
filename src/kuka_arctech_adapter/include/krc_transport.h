@@ -7,9 +7,14 @@
 
 #include "error_code.h"
 
-// 预留给后续模板引擎生成的程序包结构（路线 B 填充）
+// 模板引擎生成的程序包结构（路线 B 填充）
 struct ProgramPackage {
     std::string program_name;
+    std::string template_id;
+    bool template_verified_on_krc{false};
+    bool dry_run{true};
+    std::string wdat_ref;
+    std::vector<std::string> declared_wdats;
     std::string src_content;
     std::string dat_content;
     std::string manifest_json{"{}"};

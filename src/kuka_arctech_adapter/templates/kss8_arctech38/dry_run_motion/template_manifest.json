@@ -1,0 +1,23 @@
+{
+  "template_id": "kss8_arctech38/dry_run_motion@1.0",
+  "kss_version": "8.x",
+  "arctech_version": "3.8",
+  "dry_run_only": true,
+  "verified_on_krc": true,
+  "source_reference": "test1120 (smartHMI KSS 8.x real export)",
+  "declared_wdats": [
+    "WDAT_DEMO_01"
+  ],
+  "allowed_placeholders": [
+    "PROGRAM_NAME",
+    "JOB_ID",
+    "TRACE_ID",
+    "TOOL_ID",
+    "BASE_ID",
+    "WDAT_NAME",
+    "SEAM_ID",
+    "STEP_SUMMARY",
+    "MOTION_STATEMENTS",
+    "DATA_DECLS"
+  ]
+}

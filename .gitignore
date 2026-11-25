@@ -2,7 +2,19 @@
 /build/
 /install/
 /log/
+/output/
 /rosbag2_*/
+
+# Reference documents and Office lock files
+*.[dD][oO][cC]
+*.[dD][oO][cC][xX]
+*.[pP][dD][fF]
+.~lock.*#
+*.pdf
+# Local KUKA program files
+*.[sS][rR][cC]
+*.[dD][aA][tT]
+
 
 # CMake, Ninja, and C++ build outputs
 cmake-build-*/

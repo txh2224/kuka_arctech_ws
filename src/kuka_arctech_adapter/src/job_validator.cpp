@@ -349,8 +349,16 @@ ErrorCode JobValidator::validate_ir(
             return ErrorCode::KA_JOB_INVALID;
         }
     }
+    if (job_ir.seam_id > config_.max_seam_id) {
+        error_message =
+            "seam_id 超出 KUKA ArcTech 3.8 允许范围（0 ~ " +
+            std::to_string(config_.max_seam_id) + "）。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
     if (has_arc_start && !job_ir.dry_run && job_ir.seam_id == 0) {
-        error_message = "实焊任务包含起弧但 seam_id 未赋值（必须大于 0）。";
+        error_message =
+            "实焊任务包含起弧但 seam_id 未赋值（必须为 1 ~ " +
+            std::to_string(config_.max_seam_id) + "）。";
         return ErrorCode::KA_JOB_INVALID;
     }
 
@@ -402,6 +410,9 @@ void JobValidator::read_config() {
         }
         if (j.contains("max_base_id")) {
             config_.max_base_id = j.at("max_base_id").get<int>();
+        }
+        if (j.contains("max_seam_id")) {
+            config_.max_seam_id = j.at("max_seam_id").get<uint32_t>();
         }
         if (j.contains("max_weld_path_points")) {
             config_.max_weld_path_points =

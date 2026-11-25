@@ -105,4 +105,17 @@ struct KukaArcTechJobIR {
     //扎啤吧，为什么一个action里面可以放一个可以放多个不早点说。
 };
 
+// 判断作业是否全部由只读过程测量指令（WLD-024）组成：应走只读查询路径，不生成/不部署运动程序
+inline bool is_read_only_query_job(const KukaArcTechJobIR &job_ir) {
+    if (job_ir.steps.empty()) {
+        return false;
+    }
+    for (const auto &step : job_ir.steps) {
+        if (!std::holds_alternative<MeasureProcessStep>(step.payload)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 #endif // JOB_IR_H

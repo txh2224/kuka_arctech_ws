@@ -1,16 +1,48 @@
 #include "adapter_node.h"
 #include "error_code.h"
+#include "manual_krc_transport.h"
 #include "mock_krc_transport.h"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <functional>
+#include <stdexcept>
 
 #include <nlohmann/json.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 
+namespace {
+
+std::shared_ptr<IKrcTransport> create_transport_from_param(rclcpp::Node &node) {
+    const std::string raw_mode = node.declare_parameter<std::string>("transport_mode", "mock");
+    const std::string manual_export_dir =
+        node.declare_parameter<std::string>("manual_export_dir", "output");
+
+    std::string mode = raw_mode;
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    if (mode == "mock") {
+        return std::make_shared<MockKrcTransport>();
+    }
+    if (mode == "manual") {
+        return std::make_shared<ManualKrcTransport>(manual_export_dir);
+    }
+    if (mode == "verified") {
+        throw std::invalid_argument(
+            "transport_mode='verified' 尚未接入现场真机接口，当前支持 'mock' 或 'manual' 模式。");
+    }
+    throw std::invalid_argument(
+        "未知的 transport_mode='" + raw_mode + "'，允许值：mock / manual（后续支持 verified）。");
+}
+
+}  // namespace
+
 AdapterNode::AdapterNode(const rclcpp::NodeOptions &options)
     : rclcpp::Node("adapter_node", options),
-      transport_(std::make_shared<MockKrcTransport>()),
+      transport_(create_transport_from_param(*this)),
       program_executor_(transport_) {
     //这里创建动作Server，绑定回调函数
     execute_action_ = rclcpp_action::create_server<ExecuteBackendJob>(
@@ -135,12 +167,13 @@ void AdapterNode::execute_job(
                 result->error_code = to_error_code_string(err);
                 result->message = error_message;
                 result->result_json = make_rejected_result_json(err, error_message);
-            } else {
-                //通过KRC Transport执行作业并收集逐步结果
+            } else if (is_read_only_query_job(job_ir)) {
+                // 只读测量作业（如单条 WLD-024）直接走查询路径，不渲染也不部署 KRL 运动程序
                 const auto exec_res = program_executor_.execute(
                     job_ir,
                     job->stop_requested,
-                    publish_feedback);
+                    publish_feedback,
+                    nullptr);
                 outcome = exec_res.outcome;
                 result->success = (exec_res.outcome == ExecutionOutcome::SUCCEEDED);
                 result->error_code = to_error_code_string(exec_res.error_code);
@@ -148,6 +181,61 @@ void AdapterNode::execute_job(
                 result->backend_job_id = exec_res.backend_job_id;
                 result->artifact_manifest_json = exec_res.artifact_manifest_json;
                 result->result_json = exec_res.result_json;
+                RCLCPP_INFO(
+                    get_logger(),
+                    "只读查询任务结束: %s (success=%s, error_code=%s) %s",
+                    goal->job_id.c_str(),
+                    result->success ? "true" : "false",
+                    result->error_code.empty() ? "NONE" : result->error_code.c_str(),
+                    result->message.c_str());
+            } else {
+                // 通过黄金模板生成 .src/.dat 并做静态校验和 manifest 生成
+                publish_feedback(
+                    static_cast<uint8_t>(ExecutionStage::COMPILING),
+                    0,
+                    0.1f,
+                    job_ir.steps.empty() ? "" : job_ir.steps.front().instruction_id,
+                    "Rendering KRL template and running static checks");
+
+                ProgramPackage pkg;
+                err = template_engine_.render(job_ir, pkg, error_message);
+                if (err != ErrorCode::OK) {
+                    RCLCPP_ERROR(get_logger(), "%s", error_message.c_str());
+                    result->error_code = to_error_code_string(err);
+                    result->message = error_message;
+                    result->result_json = make_rejected_result_json(err, error_message);
+                } else {
+                    const std::string mode = transport_ ? transport_->mode_name() : "MOCK";
+                    err = static_checker_.check_and_build_manifest(
+                        job_ir, mode, pkg, error_message);
+                    if (err != ErrorCode::OK) {
+                        RCLCPP_ERROR(get_logger(), "%s", error_message.c_str());
+                        result->error_code = to_error_code_string(err);
+                        result->message = error_message;
+                        result->result_json = make_rejected_result_json(err, error_message);
+                    } else {
+                        //通过KRC Transport执行作业并收集逐步结果
+                        const auto exec_res = program_executor_.execute(
+                            job_ir,
+                            job->stop_requested,
+                            publish_feedback,
+                            &pkg);
+                        outcome = exec_res.outcome;
+                        result->success = (exec_res.outcome == ExecutionOutcome::SUCCEEDED);
+                        result->error_code = to_error_code_string(exec_res.error_code);
+                        result->message = exec_res.message;
+                        result->backend_job_id = exec_res.backend_job_id;
+                        result->artifact_manifest_json = exec_res.artifact_manifest_json;
+                        result->result_json = exec_res.result_json;
+                        RCLCPP_INFO(
+                            get_logger(),
+                            "任务结束: %s (success=%s, error_code=%s) %s",
+                            goal->job_id.c_str(),
+                            result->success ? "true" : "false",
+                            result->error_code.empty() ? "NONE" : result->error_code.c_str(),
+                            result->message.c_str());
+                    }
+                }
             }
         }
     }

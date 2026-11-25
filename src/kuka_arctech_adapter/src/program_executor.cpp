@@ -267,8 +267,8 @@ ExecutionResult ProgramExecutor::execute(
         return finalize_failed(ErrorCode::KA_KRC_UNREACHABLE, "KRC Transport 未初始化。");
     }
 
-    // 封住非 MOCK Transport 误走模拟输出的安全门：真实反馈采集接入前禁止伪造结果
-    if (mode != "MOCK") {
+    // 封住未接入真实采集的 Transport（如未完成的 VERIFIED）误走模拟输出的安全门
+    if (mode != "MOCK" && mode != "MANUAL") {
         const std::string msg =
             "当前 Transport 模式 (" + mode + ") 尚未接入真实执行反馈采集，禁止使用模拟结果替代。";
         fill_remaining_steps(0, "SKIPPED", ErrorCode::KA_PROGRAM_START_FAILED, msg);
@@ -282,13 +282,79 @@ ExecutionResult ProgramExecutor::execute(
         return finalize_canceled(msg);
     }
 
-    // 1. 探活
-    if (const auto probe_res = transport_->probe(); !probe_res.connected) {
+    // 1. 只读查询路径（全部为 WLD-024 测量步骤）：不部署、不启动 KRL 运动程序
+    if (is_read_only_query_job(job_ir)) {
+        result_doc["query_only"] = true;
+        exec_res.artifact_manifest_json = "{}";
+
+        if (mode == "MANUAL") {
+            const std::string msg =
+                "Manual 模式为离线程序包导出，未连接真实 KRC 控制器，无法执行只读在线测量（WLD-024）。";
+            fill_remaining_steps(0, "SKIPPED", ErrorCode::KA_KRC_UNREACHABLE, msg);
+            return finalize_failed(ErrorCode::KA_KRC_UNREACHABLE, msg);
+        }
+
+        if (const auto probe_res = transport_->probe(); !probe_res.connected) {
+            fill_remaining_steps(0, "SKIPPED", probe_res.error_code, probe_res.message);
+            return finalize_failed(probe_res.error_code, probe_res.message);
+        }
+
+        const std::size_t total_steps = job_ir.steps.size();
+        for (std::size_t i = 0; i < total_steps; ++i) {
+            const auto &step = job_ir.steps[i];
+            if (stop_requested.load()) {
+                append_step_terminal(step, "CANCELED", ErrorCode::OK, "只读查询在执行前已取消。");
+                fill_remaining_steps(i + 1, "SKIPPED", ErrorCode::OK, "因作业已取消而未执行。");
+                return finalize_canceled("只读查询作业已取消。");
+            }
+
+            if (feedback_cb) {
+                const float progress =
+                    static_cast<float>(i + 1) / static_cast<float>(total_steps);
+                feedback_cb(
+                    static_cast<uint8_t>(ExecutionStage::RUNNING),
+                    step.index,
+                    progress,
+                    step.instruction_id,
+                    mode + " querying process measurements");
+            }
+
+            const std::string observed_at = utc_now_iso8601();
+            nlohmann::json payload;
+            nlohmann::json evidence;
+            build_mock_step_output(step.payload, mode, observed_at, payload, evidence);
+            result_doc["step_results"].push_back({
+                {"index", step.index},
+                {"instance_id", step.instance_id},
+                {"instruction_id", step.instruction_id},
+                {"state", "SUCCEEDED"},
+                {"payload", payload},
+                {"error_code", ""},
+                {"message", "OK"},
+                {"evidence", evidence},
+            });
+        }
+
+        exec_res.outcome = ExecutionOutcome::SUCCEEDED;
+        exec_res.error_code = ErrorCode::OK;
+        exec_res.message = mode + " 只读测量查询完成。";
+        exec_res.result_json = result_doc.dump();
+        return exec_res;
+    }
+
+    // 2. 探活（MANUAL 模式检查本地导出目录就绪，且 controller_connected 始终为 false）
+    const auto probe_res = transport_->probe();
+    if (mode == "MANUAL") {
+        if (probe_res.error_code != ErrorCode::OK) {
+            fill_remaining_steps(0, "SKIPPED", probe_res.error_code, probe_res.message);
+            return finalize_failed(probe_res.error_code, probe_res.message);
+        }
+    } else if (!probe_res.connected) {
         fill_remaining_steps(0, "SKIPPED", probe_res.error_code, probe_res.message);
         return finalize_failed(probe_res.error_code, probe_res.message);
     }
 
-    // 2. 准备程序包并部署（路线 B 接入模板引擎后可通过 package_override 传入真实 SRC/DAT）
+    // 3. 准备程序包并部署（路线 B 接入模板引擎后可通过 package_override 传入真实 SRC/DAT）
     ProgramPackage pkg;
     if (package_override != nullptr) {
         pkg = *package_override;
@@ -298,9 +364,50 @@ ExecutionResult ProgramExecutor::execute(
     }
     exec_res.artifact_manifest_json = pkg.manifest_json;
 
-    if (const auto deploy_res = transport_->deploy(pkg); !deploy_res.ok) {
+    if (feedback_cb) {
+        feedback_cb(
+            static_cast<uint8_t>(ExecutionStage::COMPILING),
+            0,
+            0.2f,
+            job_ir.steps.empty() ? "" : job_ir.steps.front().instruction_id,
+            mode + " deploying package");
+    }
+
+    const auto deploy_res = transport_->deploy(pkg);
+    if (!deploy_res.ok) {
         fill_remaining_steps(0, "SKIPPED", deploy_res.error_code, deploy_res.message);
         return finalize_failed(deploy_res.error_code, deploy_res.message, deploy_res.raw_evidence);
+    }
+
+    // MANUAL 模式：程序包已落盘导出，但未在 KRC 上执行，不能返回 SUCCEEDED / success=true，
+    // 以 ABORTED + KA_PROGRAM_START_FAILED 返回导出证据并提示人工导入执行。
+    if (mode == "MANUAL") {
+        const std::string wait_msg =
+            deploy_res.message + "（Manual 模式无法自动在 KRC 上启动，作业尚未执行完成）";
+        for (const auto &step : job_ir.steps) {
+            append_step_terminal(
+                step,
+                "WAITING_OPERATOR",
+                ErrorCode::KA_PROGRAM_START_FAILED,
+                wait_msg,
+                deploy_res.raw_evidence);
+        }
+        result_doc["export_dir"] = deploy_res.raw_evidence;
+        result_doc["execution_completed"] = false;
+        result_doc["manual_handoff_required"] = true;
+        if (feedback_cb) {
+            feedback_cb(
+                static_cast<uint8_t>(ExecutionStage::RUNNING),
+                job_ir.steps.empty() ? 0 : job_ir.steps.back().index,
+                1.0f,
+                job_ir.steps.empty() ? "" : job_ir.steps.back().instruction_id,
+                wait_msg);
+        }
+        exec_res.outcome = ExecutionOutcome::FAILED;
+        exec_res.error_code = ErrorCode::KA_PROGRAM_START_FAILED;
+        exec_res.message = wait_msg;
+        exec_res.result_json = result_doc.dump();
+        return exec_res;
     }
 
     if (stop_requested.load()) {

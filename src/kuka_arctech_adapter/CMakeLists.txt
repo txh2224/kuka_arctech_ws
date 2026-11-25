@@ -12,9 +12,12 @@ find_package(rclcpp_components REQUIRED)
 add_library(adapter_node_component SHARED
   src/adapter_node.cpp
   src/job_validator.cpp
+  src/manual_krc_transport.cpp
   src/mock_krc_transport.cpp
   src/program_executor.cpp
   src/semantic_mapper.cpp
+  src/static_checker.cpp
+  src/template_engine.cpp
 )
 target_compile_features(adapter_node_component PRIVATE cxx_std_17)
 target_include_directories(adapter_node_component PRIVATE include)
@@ -45,6 +48,14 @@ install(DIRECTORY include/
 
 install(DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
+)
+
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/launch
+)
+
+install(DIRECTORY templates/
+  DESTINATION share/${PROJECT_NAME}/templates
 )
 
 ament_export_include_directories("include/${PROJECT_NAME}")

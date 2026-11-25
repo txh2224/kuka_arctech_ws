@@ -5,6 +5,8 @@
 #include "krc_transport.h"
 #include "program_executor.h"
 #include "semantic_mapper.h"
+#include "static_checker.h"
+#include "template_engine.h"
 
 #include <atomic>
 #include <memory>
@@ -70,7 +72,9 @@ private:
 
     JobValidator job_validator_;//检查任务是否合法的对象
     SemanticMapper semantic_mapper_;//将Goal解析为IR的对象
-    std::shared_ptr<IKrcTransport> transport_;//底层KRC通信抽象（默认Mock）
+    TemplateEngine template_engine_;//黄金模板实例化引擎
+    StaticChecker static_checker_;//生成程序包静态检查与manifest生成器
+    std::shared_ptr<IKrcTransport> transport_;//底层KRC通信抽象（支持mock/manual）
     ProgramExecutor program_executor_;//作业执行器
 
     //这里定义动作的Server指针

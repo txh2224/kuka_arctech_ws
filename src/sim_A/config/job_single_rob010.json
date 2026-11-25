@@ -1,0 +1,46 @@
+{
+  "job_id": "job_single_rob-010",
+  "trace_id": "trace_single_rob-010",
+  "backend": "kuka_arctech",
+  "dry_run": true,
+  "instructions": [
+    {
+      "schema_version": "1.0",
+      "instruction_id": "ROB-010",
+      "instance_id": "inst_single_rob-010",
+      "correlation_id": "task_single_rob-010",
+      "target_device": "robot_01",
+      "capability_id": "robot.motion.move_joint",
+      "action": "MoveJoint",
+      "object_json": {
+        "object_id": "robot_tcp"
+      },
+      "parameter_json": {
+        "joint_names": ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"],
+        "target_rad": [0.0, -0.7, 1.2, 0.0, 1.05, 0.0],
+        "max_velocity_rad_s": 0.5,
+        "max_acceleration_rad_s2": 1.0
+      },
+      "constraint_json": {
+        "max_state_age_ms": 1000,
+        "joint_tolerance_rad": 0.01,
+        "settle_velocity_rad_s": 0.01,
+        "settle_duration_ms": 200
+      },
+      "safety_json": {
+        "policy_id": "rob.approved_policy",
+        "applied_bundle_ids": [],
+        "constraint_revision": 0
+      },
+      "result_contract_json": {
+        "contract_id": "robot.motion.move_joint.result",
+        "contract_version": "1.0.0",
+        "completion_condition": "target_reached",
+        "required_outputs": ["joint_names", "actual_rad", "max_error_rad", "settled", "observed_at"]
+      },
+      "timeout_ms": 120000,
+      "priority": 5,
+      "failure_policy": "ABORT_ON_FAILURE"
+    }
+  ]
+}

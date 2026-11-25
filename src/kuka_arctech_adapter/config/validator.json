@@ -2,6 +2,7 @@
   "max_program_name_length": 24,
   "max_tool_id": 16,
   "max_base_id": 32,
+  "max_seam_id": 65535,
   "max_weld_path_points": 100,
   "max_ptp_speed_percent": 100.0,
   "max_joint_velocity_rad_s": 3.14,

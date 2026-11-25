@@ -4,6 +4,7 @@
 //我其实不是很理解为什么任务书要求把这个检查任务是否合法的函数单独分一个文件
 //可能以后检查任务是否合法的逻辑会变得很复杂吧
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_set>
 
@@ -17,6 +18,7 @@ struct vali_config{
     std::size_t max_program_name_length{24};//程序名的最大长度
     int max_tool_id{16};//焊枪编号的最大值
     int max_base_id{32};//坐标系编号的最大值
+    uint32_t max_seam_id{65535};//ArcTech 3.8 PLC 焊缝许可编号上限（0=未启用，1~65535=启用）
     std::size_t max_weld_path_points{100};//焊接路径点的最大数量
 
     double max_ptp_speed_percent{100.0};//点位移动速度的最大百分比
