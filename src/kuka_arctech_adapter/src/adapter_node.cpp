@@ -38,10 +38,19 @@ std::shared_ptr<IKrcTransport> create_transport_from_param(rclcpp::Node &node) {
         "未知的 transport_mode='" + raw_mode + "'，允许值：mock / manual（后续支持 verified）。");
 }
 
+TemplateEngine create_template_engine_from_param(rclcpp::Node &node) {
+    const std::string templates_dir = node.declare_parameter<std::string>("templates_dir", "");
+    if (!templates_dir.empty()) {
+        return TemplateEngine(templates_dir);
+    }
+    return TemplateEngine();
+}
+
 }  // namespace
 
 AdapterNode::AdapterNode(const rclcpp::NodeOptions &options)
     : rclcpp::Node("adapter_node", options),
+      template_engine_(create_template_engine_from_param(*this)),
       transport_(create_transport_from_param(*this)),
       program_executor_(transport_) {
     //这里创建动作Server，绑定回调函数
@@ -400,11 +409,13 @@ void AdapterNode::publish_status() {
     const KrcStatus krc_status = transport_->read_status();
     std::string active_job_id;
     bool stop_failed_latched = false;
+    bool stopping_active = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (current_job_ && (!current_job_->terminal.load() || current_job_->stop_failed.load())) {
             active_job_id = current_job_->job_id;
             stop_failed_latched = current_job_->stop_failed.load();
+            stopping_active = !current_job_->terminal.load() && current_job_->stop_requested.load();
         }
     }
 
@@ -412,7 +423,7 @@ void AdapterNode::publish_status() {
     msg.stamp = now();
     msg.backend = "kuka_arctech";
     msg.controller_connected = krc_status.controller_connected;
-    msg.program_state = krc_status.program_state;
+    msg.program_state = stopping_active ? "STOPPING" : krc_status.program_state;
     msg.weld_state = krc_status.weld_state;
     msg.current_job_id = active_job_id;
     msg.current_program = krc_status.current_program;

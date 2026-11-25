@@ -6,6 +6,10 @@ MockKrcTransport::MockKrcTransport(MockTransportOptions options)
     status_.program_state = "IDLE";
     status_.weld_state = "ARC_OFF";
     status_.message = "Mock KRC ready";
+    if (!options_.injected_fault_code.empty()) {
+        faults_ = {{options_.injected_fault_code, options_.injected_fault_message}};
+        status_.fault_code = options_.injected_fault_code;
+    }
 }
 
 void MockKrcTransport::set_options(const MockTransportOptions &options) {

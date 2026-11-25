@@ -86,6 +86,11 @@ struct JobStep {
     std::string instruction_id; // 如 "ROB-010"
     std::string instance_id;    // 如 "inst_mock_01"
     std::string capability_id;  // 如 "robot.motion.move_joint"
+    uint32_t timeout_ms{0};     // 单步执行超时（0 表示不限）
+    uint32_t settle_duration_ms{200}; // 来自 constraint_json.settle_duration_ms（默认 200ms）
+    std::string constraint_json;
+    std::string safety_json;
+    std::string result_contract_json;
     StepPayload payload;
 };
 

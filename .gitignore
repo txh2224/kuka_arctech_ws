@@ -11,9 +11,11 @@
 *.[pP][dD][fF]
 .~lock.*#
 *.pdf
-# Local KUKA program files
+# Local KUKA program files (keep tracked golden templates under templates/)
 *.[sS][rR][cC]
 *.[dD][aA][tT]
+!src/kuka_arctech_adapter/templates/**/*.src
+!src/kuka_arctech_adapter/templates/**/*.dat
 
 
 # CMake, Ninja, and C++ build outputs

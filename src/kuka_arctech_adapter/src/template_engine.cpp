@@ -1,6 +1,8 @@
 #include "template_engine.h"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -78,6 +80,43 @@ std::string first_wdat_ref(const KukaArcTechJobIR &job_ir) {
         }
     }
     return "";
+}
+
+// 将 joint_names（如 A1..A6 / joint_1..joint_6 / j1..j6）映射到 KRL 轴槽位 0..5
+bool resolve_krl_axis_values(
+    const MoveJointStep &payload,
+    std::array<double, 6> &out_deg,
+    std::string &error_message) {
+    std::array<bool, 6> filled{false, false, false, false, false, false};
+    for (std::size_t idx = 0; idx < 6; ++idx) {
+        std::string name = payload.joint_names[idx];
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        int axis_slot = -1;
+        if (name.size() == 2 && (name[0] == 'a' || name[0] == 'j') &&
+            name[1] >= '1' && name[1] <= '6') {
+            axis_slot = name[1] - '1';
+        } else if (name.rfind("joint_", 0) == 0 && name.size() == 7 &&
+                   name[6] >= '1' && name[6] <= '6') {
+            axis_slot = name[6] - '1';
+        } else if (name.rfind("joint", 0) == 0 && name.size() == 6 &&
+                   name[5] >= '1' && name[5] <= '6') {
+            axis_slot = name[5] - '1';
+        }
+        if (axis_slot < 0 || axis_slot >= 6) {
+            error_message = "无法将关节名 '" + payload.joint_names[idx] +
+                            "' 映射到 KUKA A1~A6（支持 A1..A6 / joint_1..joint_6 / j1..j6）。";
+            return false;
+        }
+        if (filled[axis_slot]) {
+            error_message = "joint_names 中存在重复映射到 A" + std::to_string(axis_slot + 1) + " 的关节名。";
+            return false;
+        }
+        filled[axis_slot] = true;
+        out_deg[axis_slot] = payload.target_rad[idx] * kRadToDeg;
+    }
+    return true;
 }
 
 // 严格白名单占位符替换：模板中若出现未在 allowed_placeholders 声明的 {{KEY}} 直接报错
@@ -210,6 +249,7 @@ ErrorCode TemplateEngine::render(
     int pdat_idx = 0;
     int ldat_idx = 0;
 
+    bool render_step_failed = false;
     for (std::size_t i = 0; i < job_ir.steps.size(); ++i) {
         const auto &step = job_ir.steps[i];
         if (i > 0) {
@@ -226,27 +266,35 @@ ErrorCode TemplateEngine::render(
                 using T = std::decay_t<decltype(payload)>;
 
                 if constexpr (std::is_same_v<T, MoveJointStep>) {
+                    std::array<double, 6> axis_deg{};
+                    if (!resolve_krl_axis_values(payload, axis_deg, error_message)) {
+                        render_step_failed = true;
+                        return;
+                    }
                     ++pt_idx;
                     ++pdat_idx;
                     const std::string j_name = "J" + std::to_string(pt_idx);
                     const std::string pdat_name = "PDAT" + std::to_string(pdat_idx);
-                    // 将 rad/s 映射到 [1, 100]% 关节速度百分比
+                    // 将 rad/s 与 rad/s^2 映射到 [1, 100]% 关节速度与加速度百分比
                     const double vel_pct = std::clamp(
                         (payload.max_velocity_rad_s / 3.14) * 100.0, 1.0, 100.0);
+                    const double acc_pct = std::clamp(
+                        (payload.max_acceleration_rad_s2 / 10.0) * 100.0, 1.0, 100.0);
 
                     dat_body << "DECL E6AXIS X" << j_name << "={"
-                             << "A1 " << fmt_num(payload.target_rad[0] * kRadToDeg)
-                             << ",A2 " << fmt_num(payload.target_rad[1] * kRadToDeg)
-                             << ",A3 " << fmt_num(payload.target_rad[2] * kRadToDeg)
-                             << ",A4 " << fmt_num(payload.target_rad[3] * kRadToDeg)
-                             << ",A5 " << fmt_num(payload.target_rad[4] * kRadToDeg)
-                             << ",A6 " << fmt_num(payload.target_rad[5] * kRadToDeg)
+                             << "A1 " << fmt_num(axis_deg[0])
+                             << ",A2 " << fmt_num(axis_deg[1])
+                             << ",A3 " << fmt_num(axis_deg[2])
+                             << ",A4 " << fmt_num(axis_deg[3])
+                             << ",A5 " << fmt_num(axis_deg[4])
+                             << ",A6 " << fmt_num(axis_deg[5])
                              << ",E1 0.0,E2 0.0,E3 0.0,E4 0.0,E5 0.0,E6 0.0}\n";
                     dat_body << "DECL FDAT F" << j_name << "={TOOL_NO " << tool_no
                              << ",BASE_NO " << base_no
                              << ",IPO_FRAME #BASE,POINT2[] \" \"}\n";
                     dat_body << "DECL PDAT P" << pdat_name << "={VEL " << fmt_num(vel_pct)
-                             << ",ACC 100.000,APO_DIST 500.000,APO_MODE #CDIS,GEAR_JERK 100.000,EXAX_IGN 0}\n";
+                             << ",ACC " << fmt_num(acc_pct)
+                             << ",APO_DIST 500.000,APO_MODE #CDIS,GEAR_JERK 100.000,EXAX_IGN 0}\n";
 
                     src_body << "SPTP X" << j_name
                              << " WITH $VEL_AXIS[1] = SVEL_JOINT(" << fmt_num(vel_pct, 1)
@@ -264,6 +312,8 @@ ErrorCode TemplateEngine::render(
                     const std::string p_name = "P" + std::to_string(pt_idx);
                     const std::string ldat_name = "CPDAT" + std::to_string(ldat_idx);
                     const double vel = std::max(0.001, payload.speed_m_s);
+                    const double acc_pct = std::clamp(
+                        (payload.acceleration_m_s2 / 5.0) * 100.0, 1.0, 100.0);
 
                     dat_body << "DECL E6POS X" << p_name << "={"
                              << "X " << fmt_num(payload.target_pose.x)
@@ -277,8 +327,10 @@ ErrorCode TemplateEngine::render(
                              << ",BASE_NO " << base_no
                              << ",IPO_FRAME #BASE,POINT2[] \" \"}\n";
                     dat_body << "DECL LDAT L" << ldat_name << "={VEL " << fmt_num(vel, 4)
-                             << ",ACC 100.000,APO_DIST 500.000,APO_FAC 50.0000,AXIS_VEL 100.000,"
-                             << "AXIS_ACC 100.000,ORI_TYP #VAR,CIRC_TYP #BASE,JERK_FAC 50.0000,"
+                             << ",ACC " << fmt_num(acc_pct)
+                             << ",APO_DIST 500.000,APO_FAC 50.0000,AXIS_VEL 100.000,"
+                             << "AXIS_ACC " << fmt_num(acc_pct)
+                             << ",ORI_TYP #VAR,CIRC_TYP #BASE,JERK_FAC 50.0000,"
                              << "GEAR_JERK 100.000,EXAX_IGN 0}\n";
 
                     src_body << "SLIN X" << p_name
@@ -363,6 +415,9 @@ ErrorCode TemplateEngine::render(
                 }
             },
             step.payload);
+        if (render_step_failed) {
+            return ErrorCode::KA_TEMPLATE_RENDER_FAILED;
+        }
     }
     summary_oss << "]";
 

@@ -47,16 +47,6 @@ std::string trim_line(const std::string &s) {
     return s.substr(b, e - b);
 }
 
-std::size_t count_substring(const std::string &text, const std::string &needle) {
-    std::size_t count = 0;
-    std::size_t pos = 0;
-    while ((pos = text.find(needle, pos)) != std::string::npos) {
-        ++count;
-        pos += needle.size();
-    }
-    return count;
-}
-
 inline uint32_t rotr32(uint32_t x, uint32_t n) {
     return (x >> n) | (x << (32 - n));
 }
@@ -243,13 +233,39 @@ ErrorCode StaticChecker::check_and_build_manifest(
         return ErrorCode::KA_STATIC_CHECK_FAILED;
     }
 
-    // 4. 引弧 / 收弧成对与 dry_run 防误引弧检查
-    const std::size_t arc_on_count =
-        count_substring(pkg.src_content, "ARC_ON") + count_substring(pkg.src_content, "ARCON");
-    const std::size_t arc_off_count =
-        count_substring(pkg.src_content, "ARC_OFF") + count_substring(pkg.src_content, "ARCOFF");
-    if (arc_on_count != arc_off_count) {
-        error_message = "静态检查失败：.src 中引弧(ARC_ON/ARCON)与收弧(ARC_OFF/ARCOFF)不成对。";
+    // 4. 非注释代码行中的引弧 / 收弧成对与顺序检查（以及 dry_run 防误引弧）
+    int arc_depth = 0;
+    std::size_t arc_on_count = 0;
+    std::size_t arc_off_count = 0;
+    {
+        std::istringstream iss(pkg.src_content);
+        std::string raw_line;
+        while (std::getline(iss, raw_line)) {
+            const std::size_t semi = raw_line.find(';');
+            std::string code = trim_line(semi == std::string::npos ? raw_line : raw_line.substr(0, semi));
+            if (code.empty()) {
+                continue;
+            }
+            const bool is_on =
+                code.find("ARC_ON") != std::string::npos || code.find("ARCON") != std::string::npos;
+            const bool is_off =
+                code.find("ARC_OFF") != std::string::npos || code.find("ARCOFF") != std::string::npos;
+            if (is_on) {
+                ++arc_on_count;
+                ++arc_depth;
+            }
+            if (is_off) {
+                ++arc_off_count;
+                --arc_depth;
+                if (arc_depth < 0) {
+                    error_message = "静态检查失败：.src 中出现未先引弧的收弧指令（ARC_OFF/ARCOFF 顺序错误）。";
+                    return ErrorCode::KA_STATIC_CHECK_FAILED;
+                }
+            }
+        }
+    }
+    if (arc_on_count != arc_off_count || arc_depth != 0) {
+        error_message = "静态检查失败：.src 中非注释引弧(ARC_ON/ARCON)与收弧(ARC_OFF/ARCOFF)不成对。";
         return ErrorCode::KA_STATIC_CHECK_FAILED;
     }
     if (job_ir.dry_run && arc_on_count > 0) {

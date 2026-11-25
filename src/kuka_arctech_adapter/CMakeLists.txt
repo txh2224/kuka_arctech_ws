@@ -65,4 +65,22 @@ ament_export_dependencies(
   rclcpp_action
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_kuka_arctech_adapter
+    test/test_kuka_arctech_adapter.cpp
+  )
+  if(TARGET test_kuka_arctech_adapter)
+    target_compile_features(test_kuka_arctech_adapter PRIVATE cxx_std_17)
+    target_include_directories(test_kuka_arctech_adapter PRIVATE include)
+    target_compile_definitions(test_kuka_arctech_adapter PRIVATE
+      KUKA_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(test_kuka_arctech_adapter
+      adapter_node_component
+      nlohmann_json::nlohmann_json
+    )
+  endif()
+endif()
+
 ament_package()

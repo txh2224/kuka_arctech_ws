@@ -25,6 +25,11 @@ def generate_launch_description():
         default_value="output",
         description="Output directory for generated .src/.dat/manifest when transport_mode:=manual.",
     )
+    templates_dir_arg = DeclareLaunchArgument(
+        "templates_dir",
+        default_value="",
+        description="Optional override directory for KRL golden templates (empty uses installed share/templates).",
+    )
 
     adapter_node = Node(
         package="kuka_arctech_adapter",
@@ -36,6 +41,7 @@ def generate_launch_description():
             {
                 "transport_mode": LaunchConfiguration("transport_mode"),
                 "manual_export_dir": LaunchConfiguration("manual_export_dir"),
+                "templates_dir": LaunchConfiguration("templates_dir"),
             }
         ],
         arguments=["--ros-args", "--log-level", LaunchConfiguration("log_level")],
@@ -47,6 +53,7 @@ def generate_launch_description():
             log_level_arg,
             transport_mode_arg,
             manual_export_dir_arg,
+            templates_dir_arg,
             adapter_node,
         ]
     )

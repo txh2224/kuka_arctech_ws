@@ -304,11 +304,39 @@ ErrorCode SemanticMapper::map(
             return ErrorCode::KA_JOB_INVALID;
         }
 
+        // 解析并校验可选的 constraint_json / safety_json / result_contract_json（非空时必须为合法 JSON 对象）
+        nlohmann::json constraint_doc = nlohmann::json::object();
+        if (!inst.constraint_json.empty() &&
+            !parse_json_object(inst.constraint_json, "constraint_json", constraint_doc, error_message)) {
+            error_message = step_prefix + error_message;
+            return ErrorCode::KA_JOB_INVALID;
+        }
+        nlohmann::json safety_doc = nlohmann::json::object();
+        if (!inst.safety_json.empty() &&
+            !parse_json_object(inst.safety_json, "safety_json", safety_doc, error_message)) {
+            error_message = step_prefix + error_message;
+            return ErrorCode::KA_JOB_INVALID;
+        }
+        nlohmann::json contract_doc = nlohmann::json::object();
+        if (!inst.result_contract_json.empty() &&
+            !parse_json_object(inst.result_contract_json, "result_contract_json", contract_doc, error_message)) {
+            error_message = step_prefix + error_message;
+            return ErrorCode::KA_JOB_INVALID;
+        }
+
         JobStep step;
         step.index = static_cast<uint32_t>(i);
         step.instruction_id = inst.instruction_id;
         step.instance_id = inst.instance_id;
         step.capability_id = inst.capability_id;
+        step.timeout_ms = inst.timeout_ms;
+        step.constraint_json = inst.constraint_json;
+        step.safety_json = inst.safety_json;
+        step.result_contract_json = inst.result_contract_json;
+        if (constraint_doc.contains("settle_duration_ms") &&
+            constraint_doc.at("settle_duration_ms").is_number_unsigned()) {
+            step.settle_duration_ms = constraint_doc.at("settle_duration_ms").get<uint32_t>();
+        }
 
         if (inst.capability_id == "robot.motion.move_joint") {
             MoveJointStep payload;

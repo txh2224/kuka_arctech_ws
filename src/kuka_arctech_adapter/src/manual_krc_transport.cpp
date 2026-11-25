@@ -62,22 +62,36 @@ DeployResult ManualKrcTransport::deploy(const ProgramPackage &pkg) {
         return res;
     }
 
-    auto write_file = [&](const fs::path &p, const std::string &content) -> bool {
-        std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
-        if (!ofs.is_open()) {
+    auto write_file_atomic = [&](const fs::path &p, const std::string &content) -> bool {
+        const fs::path tmp = p.string() + ".tmp";
+        {
+            std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
+            if (!ofs.is_open()) {
+                return false;
+            }
+            ofs.write(content.data(), static_cast<std::streamsize>(content.size()));
+            ofs.flush();
+            if (!ofs.good()) {
+                return false;
+            }
+        }
+        std::error_code ren_ec;
+        fs::rename(tmp, p, ren_ec);
+        if (ren_ec) {
+            std::error_code rm_ec;
+            fs::remove(tmp, rm_ec);
             return false;
         }
-        ofs.write(content.data(), static_cast<std::streamsize>(content.size()));
-        return ofs.good();
+        return true;
     };
 
     const fs::path src_file = target_dir / (pkg.program_name + ".src");
     const fs::path dat_file = target_dir / (pkg.program_name + ".dat");
     const fs::path manifest_file = target_dir / "artifact_manifest.json";
 
-    if (!write_file(src_file, pkg.src_content) ||
-        !write_file(dat_file, pkg.dat_content) ||
-        !write_file(manifest_file, pkg.manifest_json)) {
+    if (!write_file_atomic(src_file, pkg.src_content) ||
+        !write_file_atomic(dat_file, pkg.dat_content) ||
+        !write_file_atomic(manifest_file, pkg.manifest_json)) {
         res.ok = false;
         res.error_code = ErrorCode::KA_DEPLOY_FAILED;
         res.message = "写入 .src/.dat/artifact_manifest.json 失败: " + target_dir.string();

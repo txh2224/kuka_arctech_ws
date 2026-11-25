@@ -119,7 +119,7 @@ ros2 topic echo /adapter/kuka_arctech/status
 # 主动请求停止当前作业
 ros2 service call /adapter/kuka_arctech/stop_job \
   atomic_adapter_interfaces/srv/StopBackendJob \
-  '{job_id: "job_mock_002", reason: "manual stop test"}'
+  '{job_id: "job_mock_002"}'
 ```
 
 ### 4. 组件容器方式启动（可选）

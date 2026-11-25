@@ -5,7 +5,7 @@
     "welding_torch_01": 1
   },
   "frame_id_map": {
-    "base": 1
+    "base": 0
   },
   "recipe_wdat_map": {
     "WELD_PROGRAM_01": "WDAT_DEMO_01"

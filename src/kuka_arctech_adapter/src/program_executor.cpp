@@ -63,7 +63,7 @@ ExecutionStage stage_for_step(const StepPayload &payload) {
 }
 
 void build_mock_step_output(
-    const StepPayload &payload,
+    const JobStep &job_step,
     const std::string &mode,
     const std::string &observed_at,
     nlohmann::json &out_payload,
@@ -87,7 +87,7 @@ void build_mock_step_output(
                     {"observed_at", observed_at},
                 };
                 out_evidence["completion_condition"] = "target_reached";
-                out_evidence["settle_duration_ms"] = 200;
+                out_evidence["settle_duration_ms"] = job_step.settle_duration_ms;
                 out_evidence["settle_velocity_rad_s"] = 0.0;
             } else if constexpr (std::is_same_v<T, MoveLinearStep>) {
                 out_payload = nlohmann::json{
@@ -99,7 +99,7 @@ void build_mock_step_output(
                     {"observed_at", observed_at},
                 };
                 out_evidence["completion_condition"] = "target_reached";
-                out_evidence["settle_duration_ms"] = 200;
+                out_evidence["settle_duration_ms"] = job_step.settle_duration_ms;
             } else if constexpr (std::is_same_v<T, FollowPathStep>) {
                 const KukaPose final_pose =
                     step.waypoints.empty() ? KukaPose{} : step.waypoints.back();
@@ -161,7 +161,7 @@ void build_mock_step_output(
                 out_evidence["completion_condition"] = "measurements_returned";
             }
         },
-        payload);
+        job_step.payload);
 }
 
 }  // namespace
@@ -188,9 +188,21 @@ ExecutionResult ProgramExecutor::execute(
         {"step_results", nlohmann::json::array()},
     };
 
-    // 由执行线程独占底层启停，避免与服务回调线程发生启停竞态
+    // 由执行线程独占底层启停，先切到可观测的 STOPPING 状态再停机
     auto stop_transport_once = [&]() -> CommandResult {
-        return transport_->stop_program();
+        transport_->set_runtime_state("STOPPING", "ARC_OFF", "Stopping active program");
+        auto res = transport_->stop_program();
+        if (!res.ok) {
+            // 任何停机未确认原因（包括停机期间断连 KA_KRC_UNREACHABLE）均归并为 KA_STOP_FAILED 以便上层锁槽
+            const std::string orig_code = to_error_code_string(res.error_code);
+            if (!orig_code.empty() && res.error_code != ErrorCode::KA_STOP_FAILED) {
+                res.raw_evidence =
+                    "stop_cause=" + orig_code +
+                    (res.raw_evidence.empty() ? "" : ("; " + res.raw_evidence));
+            }
+            res.error_code = ErrorCode::KA_STOP_FAILED;
+        }
+        return res;
     };
 
     auto append_step_terminal = [&](const JobStep &step,
@@ -322,7 +334,7 @@ ExecutionResult ProgramExecutor::execute(
             const std::string observed_at = utc_now_iso8601();
             nlohmann::json payload;
             nlohmann::json evidence;
-            build_mock_step_output(step.payload, mode, observed_at, payload, evidence);
+            build_mock_step_output(step, mode, observed_at, payload, evidence);
             result_doc["step_results"].push_back({
                 {"index", step.index},
                 {"instance_id", step.instance_id},
@@ -373,6 +385,12 @@ ExecutionResult ProgramExecutor::execute(
             mode + " deploying package");
     }
 
+    if (stop_requested.load()) {
+        const std::string msg = "作业在导出/部署前已按请求停止。";
+        fill_remaining_steps(0, "CANCELED", ErrorCode::OK, msg);
+        return finalize_canceled(msg);
+    }
+
     const auto deploy_res = transport_->deploy(pkg);
     if (!deploy_res.ok) {
         fill_remaining_steps(0, "SKIPPED", deploy_res.error_code, deploy_res.message);
@@ -397,9 +415,9 @@ ExecutionResult ProgramExecutor::execute(
         result_doc["manual_handoff_required"] = true;
         if (feedback_cb) {
             feedback_cb(
-                static_cast<uint8_t>(ExecutionStage::RUNNING),
+                static_cast<uint8_t>(ExecutionStage::COMPILING),
                 job_ir.steps.empty() ? 0 : job_ir.steps.back().index,
-                1.0f,
+                0.9f,
                 job_ir.steps.empty() ? "" : job_ir.steps.back().instruction_id,
                 wait_msg);
         }
@@ -466,14 +484,25 @@ ExecutionResult ProgramExecutor::execute(
             return finalize_failed(ErrorCode::KA_ARCTECH_FAULT, orig_msg, faults.front().code);
         }
 
-        // 遇到起弧步骤时模拟/执行焊缝许可握手
+        // 遇到起弧步骤时模拟/执行焊缝许可握手，并校验返回焊缝号与请求一致
         if (std::holds_alternative<ArcStartStep>(step.payload) && job_ir.seam_id > 0) {
             const auto seam_res = transport_->set_seam_permission(job_ir.seam_id, true);
-            if (!seam_res.granted) {
+            const bool seam_ok =
+                seam_res.granted && (seam_res.granted_seam_id == job_ir.seam_id);
+            if (!seam_ok) {
+                const ErrorCode seam_err =
+                    (seam_res.error_code != ErrorCode::OK)
+                        ? seam_res.error_code
+                        : ErrorCode::KA_SEAM_PERMISSION_TIMEOUT;
+                const std::string seam_msg =
+                    !seam_res.granted
+                        ? seam_res.message
+                        : ("焊缝许可返回编号不匹配：请求=" + std::to_string(job_ir.seam_id) +
+                           "，授予=" + std::to_string(seam_res.granted_seam_id) + "。");
                 const auto stop_res = stop_transport_once();
                 if (!stop_res.ok) {
                     const std::string combined_msg =
-                        seam_res.message + "；且后续停止失败：" + stop_res.message;
+                        seam_msg + "；且后续停止失败：" + stop_res.message;
                     const std::string combined_ev =
                         "seam_permission_denied; stop_failed=" + stop_res.raw_evidence;
                     append_step_terminal(
@@ -482,10 +511,10 @@ ExecutionResult ProgramExecutor::execute(
                         i + 1, "SKIPPED", ErrorCode::OK, "因前序步骤许可失败且停机失败而跳过。");
                     return finalize_failed(ErrorCode::KA_STOP_FAILED, combined_msg, combined_ev);
                 }
-                append_step_terminal(step, "FAILED", seam_res.error_code, seam_res.message);
+                append_step_terminal(step, "FAILED", seam_err, seam_msg);
                 fill_remaining_steps(
                     i + 1, "SKIPPED", ErrorCode::OK, "因前序步骤焊缝许可失败而跳过。");
-                return finalize_failed(seam_res.error_code, seam_res.message);
+                return finalize_failed(seam_err, seam_msg);
             }
         }
 
@@ -502,8 +531,9 @@ ExecutionResult ProgramExecutor::execute(
             mode + " step active: " + step.instruction_id);
 
         if (feedback_cb) {
+            // 部署阶段占 0.0~0.2，步骤执行阶段单调推进 0.2~1.0，避免进度回退
             const float progress =
-                (static_cast<float>(i) + 0.5f) / static_cast<float>(total_steps);
+                0.2f + 0.8f * ((static_cast<float>(i) + 0.5f) / static_cast<float>(total_steps));
             feedback_cb(
                 static_cast<uint8_t>(stage),
                 step.index,
@@ -512,13 +542,50 @@ ExecutionResult ProgramExecutor::execute(
                 mode + " step active");
         }
 
-        // 分段小睡以便及时响应取消/停止请求
+        // 分段小睡以便及时响应取消/停止请求与单步超时（timeout_ms）
+        const auto step_start_tp = std::chrono::steady_clock::now();
         if (step_delay_ms_ > 0) {
             const uint32_t slice_ms = 10;
             uint32_t elapsed = 0;
             while (elapsed < step_delay_ms_) {
                 if (stop_requested.load()) {
                     return handle_stop_at_step(i, "作业在执行过程中已按请求停止。");
+                }
+                if (step.timeout_ms > 0) {
+                    const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                             std::chrono::steady_clock::now() - step_start_tp)
+                                             .count();
+                    if (wall_ms >= static_cast<int64_t>(step.timeout_ms)) {
+                        const std::string timeout_msg =
+                            "步骤 " + step.instruction_id + " 执行超过 timeout_ms=" +
+                            std::to_string(step.timeout_ms) + "ms，已触发停机。";
+                        const auto stop_res = stop_transport_once();
+                        if (!stop_res.ok) {
+                            const std::string combined_msg =
+                                timeout_msg + "；且后续停止失败：" + stop_res.message;
+                            const std::string combined_ev =
+                                "timeout_ms=" + std::to_string(step.timeout_ms) +
+                                "; stop_failed=" + stop_res.raw_evidence;
+                            append_step_terminal(
+                                step, "FAILED", ErrorCode::KA_STOP_FAILED, combined_msg, combined_ev);
+                            fill_remaining_steps(
+                                i + 1, "SKIPPED", ErrorCode::OK, "因前序步骤超时且停机失败而跳过。");
+                            return finalize_failed(
+                                ErrorCode::KA_STOP_FAILED, combined_msg, combined_ev);
+                        }
+                        append_step_terminal(
+                            step,
+                            "FAILED",
+                            ErrorCode::KA_PROGRAM_TIMEOUT,
+                            timeout_msg,
+                            "timeout_ms=" + std::to_string(step.timeout_ms));
+                        fill_remaining_steps(
+                            i + 1, "SKIPPED", ErrorCode::OK, "因前序步骤执行超时而跳过。");
+                        return finalize_failed(
+                            ErrorCode::KA_PROGRAM_TIMEOUT,
+                            timeout_msg,
+                            "timeout_ms=" + std::to_string(step.timeout_ms));
+                    }
                 }
                 const uint32_t wait_ms = std::min(slice_ms, step_delay_ms_ - elapsed);
                 std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
@@ -534,7 +601,7 @@ ExecutionResult ProgramExecutor::execute(
         const std::string observed_at = utc_now_iso8601();
         nlohmann::json step_payload;
         nlohmann::json step_evidence;
-        build_mock_step_output(step.payload, mode, observed_at, step_payload, step_evidence);
+        build_mock_step_output(step, mode, observed_at, step_payload, step_evidence);
 
         result_doc["step_results"].push_back({
             {"index", step.index},
