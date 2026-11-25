@@ -8,6 +8,9 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <build_depend>nlohmann-json-dev</build_depend>
+
+  <depend>ament_index_cpp</depend>
   <depend>atomic_adapter_interfaces</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_action</depend>

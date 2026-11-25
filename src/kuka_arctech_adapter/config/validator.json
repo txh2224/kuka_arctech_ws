@@ -1,0 +1,20 @@
+{
+  "max_program_name_length": 24,
+  "max_tool_id": 16,
+  "max_base_id": 32,
+  "max_weld_path_points": 100,
+  "max_ptp_speed_percent": 100.0,
+  "max_lin_speed_m_s": 2.0,
+  "max_weld_speed_m_s": 0.2,
+  "min_x_mm": -3000.0,
+  "max_x_mm": 3000.0,
+  "min_y_mm": -3000.0,
+  "max_y_mm": 3000.0,
+  "min_z_mm": -1000.0,
+  "max_z_mm": 3000.0,
+  "min_angle_deg": -180.0,
+  "max_angle_deg": 180.0,
+  "wdat_allowlist": [
+    "WDAT_DEMO_01"
+  ]
+}

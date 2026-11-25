@@ -7,4 +7,4 @@ if [[ -z "${ROS_DISTRO:-}" ]]; then
   source /opt/ros/humble/setup.bash
 fi
 
-exec colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
+exec colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release

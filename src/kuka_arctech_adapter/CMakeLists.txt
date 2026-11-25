@@ -2,7 +2,9 @@ cmake_minimum_required(VERSION 3.12)
 project(kuka_arctech_adapter)
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(atomic_adapter_interfaces REQUIRED)
+find_package(nlohmann_json REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_components REQUIRED)
@@ -13,12 +15,14 @@ add_library(adapter_node_component SHARED
 )
 target_compile_features(adapter_node_component PRIVATE cxx_std_17)
 target_include_directories(adapter_node_component PRIVATE include)
-ament_target_dependencies(adapter_node_component
+ament_target_dependencies(adapter_node_component PUBLIC
+  ament_index_cpp
   atomic_adapter_interfaces
   rclcpp
   rclcpp_action
   rclcpp_components
 )
+target_link_libraries(adapter_node_component PRIVATE nlohmann_json::nlohmann_json)
 
 rclcpp_components_register_node(adapter_node_component
   PLUGIN "AdapterNode"
@@ -34,6 +38,10 @@ install(TARGETS adapter_node_component
 
 install(DIRECTORY include/
   DESTINATION include/${PROJECT_NAME}
+)
+
+install(DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
 )
 
 ament_export_include_directories("include/${PROJECT_NAME}")

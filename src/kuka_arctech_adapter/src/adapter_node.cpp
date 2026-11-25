@@ -1,4 +1,5 @@
 #include "adapter_node.h"
+#include "error_code.h"
 
 #include <functional>
 
@@ -44,12 +45,16 @@ void AdapterNode::execute_job(
 
     std::string error_message;
     //检查当前任务是否合法
-    if (!job_validator_.validate(*goal, error_message)) {
+    auto err = job_validator_.validate(*goal, error_message);
+    if (err != ErrorCode::OK) {
         RCLCPP_ERROR(get_logger(), "%s", error_message.c_str());
-        result->error_code = "KA_JOB_INVALID";
+        result->error_code = to_error_code_string(err);
         result->message = error_message;
     } else {
-        //这里是执行任务的逻辑
+        //这里先把任务解析为IR
+        KukaArcTechJobIR job_ir;
+        //然后再检查IR是否合法
+
     }
 
     // 先释放任务槽，客户端收到结果后就可以提交下一单。
@@ -104,7 +109,7 @@ void AdapterNode::accepted_callback(std::shared_ptr<ExecuteGoalHandle> goal_hand
 
         auto result = std::make_shared<ExecuteBackendJob::Result>();
         result->success = false;
-        result->error_code = "KA_PROGRAM_START_FAILED";
+        result->error_code = to_error_code_string(ErrorCode::KA_PROGRAM_START_FAILED);
         result->message = "当前任务不存在，无法执行。";
 
         goal_handle->abort(result);
