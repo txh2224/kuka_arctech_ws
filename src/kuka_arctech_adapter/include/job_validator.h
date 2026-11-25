@@ -20,9 +20,14 @@ struct vali_config{
     std::size_t max_weld_path_points{100};//焊接路径点的最大数量
 
     double max_ptp_speed_percent{100.0};//点位移动速度的最大百分比
+    double max_joint_velocity_rad_s{3.14};//关节运动最大角速度（rad/s）
+    double max_joint_acceleration_rad_s2{10.0};//关节运动最大角加速度（rad/s^2）
     double max_lin_speed_m_s{2.0};//线性移动速度的最大值（m/s）
+    double max_lin_acceleration_m_s2{5.0};//线性移动加速度的最大值（m/s^2）
     double max_weld_speed_m_s{0.2};//焊接速度的最大值（m/s）
 
+    double min_joint_rad{-6.283185307179586};
+    double max_joint_rad{6.283185307179586};
     double min_x_mm{-3000.0};
     double max_x_mm{3000.0};
     double min_y_mm{-3000.0};
@@ -34,6 +39,8 @@ struct vali_config{
 
     // 非空时强制要求 weld_data_ref 必须在白名单内（KA-T05）
     std::unordered_set<std::string> wdat_allowlist;
+    // 允许读取的过程量通道名（WLD-024）
+    std::unordered_set<std::string> allowed_measure_channels{"current", "voltage"};
 };
 
 class JobValidator {
@@ -62,6 +69,21 @@ private:
         const KukaPose &pose,
         const std::string &label,
         std::string &error_message) const;
+
+    //各原子步骤的参数校验
+    ErrorCode validate_step(const MoveJointStep &step, std::string &error_message) const;
+    ErrorCode validate_step(const MoveLinearStep &step, std::string &error_message) const;
+    ErrorCode validate_step(const FollowPathStep &step, std::string &error_message) const;
+    ErrorCode validate_step(const RecipeSelectStep &step, std::string &error_message) const;
+    ErrorCode validate_step(const ArcStartStep &step, std::string &error_message) const;
+    ErrorCode validate_step(const ArcStopStep &step, std::string &error_message) const;
+    ErrorCode validate_step(const MeasureProcessStep &step, std::string &error_message) const;
+
+    //多步序列的时序与工艺约束校验
+    ErrorCode validate_sequence(
+        const struct KukaArcTechJobIR &job_ir,
+        std::string &error_message) const;
+
     //读取配置参数
     void read_config();
 

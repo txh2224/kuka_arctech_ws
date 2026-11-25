@@ -4,8 +4,13 @@
   "max_base_id": 32,
   "max_weld_path_points": 100,
   "max_ptp_speed_percent": 100.0,
+  "max_joint_velocity_rad_s": 3.14,
+  "max_joint_acceleration_rad_s2": 10.0,
   "max_lin_speed_m_s": 2.0,
+  "max_lin_acceleration_m_s2": 5.0,
   "max_weld_speed_m_s": 0.2,
+  "min_joint_rad": -6.283185307179586,
+  "max_joint_rad": 6.283185307179586,
   "min_x_mm": -3000.0,
   "max_x_mm": 3000.0,
   "min_y_mm": -3000.0,
@@ -16,5 +21,9 @@
   "max_angle_deg": 180.0,
   "wdat_allowlist": [
     "WDAT_DEMO_01"
+  ],
+  "allowed_measure_channels": [
+    "current",
+    "voltage"
   ]
 }

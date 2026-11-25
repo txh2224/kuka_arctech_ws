@@ -1,0 +1,451 @@
+#include "program_executor.h"
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
+#include <thread>
+#include <variant>
+
+#include <nlohmann/json.hpp>
+
+namespace {
+
+constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+
+std::string utc_now_iso8601() {
+    const auto now = std::chrono::system_clock::now();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now.time_since_epoch()) %
+                    1000;
+    const std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::tm utc_tm{};
+    gmtime_r(&t, &utc_tm);
+
+    std::ostringstream oss;
+    oss << std::put_time(&utc_tm, "%Y-%m-%dT%H:%M:%S")
+        << '.' << std::setw(3) << std::setfill('0') << ms.count() << 'Z';
+    return oss.str();
+}
+
+nlohmann::json kuka_pose_to_ros_json(const KukaPose &pose) {
+    const double yaw = pose.a * kDegToRad * 0.5;
+    const double pitch = pose.b * kDegToRad * 0.5;
+    const double roll = pose.c * kDegToRad * 0.5;
+
+    const double cy = std::cos(yaw);
+    const double sy = std::sin(yaw);
+    const double cp = std::cos(pitch);
+    const double sp = std::sin(pitch);
+    const double cr = std::cos(roll);
+    const double sr = std::sin(roll);
+
+    const double qw = cr * cp * cy + sr * sp * sy;
+    const double qx = sr * cp * cy - cr * sp * sy;
+    const double qy = cr * sp * cy + sr * cp * sy;
+    const double qz = cr * cp * sy - sr * sp * cy;
+
+    return nlohmann::json{
+        {"position_m", {pose.x / 1000.0, pose.y / 1000.0, pose.z / 1000.0}},
+        {"quaternion_xyzw", {qx, qy, qz, qw}},
+    };
+}
+
+ExecutionStage stage_for_step(const StepPayload &payload) {
+    if (std::holds_alternative<ArcStartStep>(payload) ||
+        std::holds_alternative<ArcStopStep>(payload) ||
+        std::holds_alternative<MeasureProcessStep>(payload)) {
+        return ExecutionStage::WELDING;
+    }
+    return ExecutionStage::RUNNING;
+}
+
+void build_mock_step_output(
+    const StepPayload &payload,
+    const std::string &mode,
+    const std::string &observed_at,
+    nlohmann::json &out_payload,
+    nlohmann::json &out_evidence) {
+    const bool simulated = (mode == "MOCK");
+    out_evidence = nlohmann::json{
+        {"mode", mode},
+        {"simulated", simulated},
+        {"observed_at", observed_at},
+    };
+
+    std::visit(
+        [&](const auto &step) {
+            using T = std::decay_t<decltype(step)>;
+            if constexpr (std::is_same_v<T, MoveJointStep>) {
+                out_payload = nlohmann::json{
+                    {"joint_names", step.joint_names},
+                    {"actual_rad", step.target_rad},
+                    {"max_error_rad", 0.0},
+                    {"settled", true},
+                    {"observed_at", observed_at},
+                };
+                out_evidence["completion_condition"] = "target_reached";
+                out_evidence["settle_duration_ms"] = 200;
+                out_evidence["settle_velocity_rad_s"] = 0.0;
+            } else if constexpr (std::is_same_v<T, MoveLinearStep>) {
+                out_payload = nlohmann::json{
+                    {"actual_pose", kuka_pose_to_ros_json(step.target_pose)},
+                    {"position_error_m", 0.0},
+                    {"orientation_error_rad", 0.0},
+                    {"max_path_deviation_m", 0.0},
+                    {"settled", true},
+                    {"observed_at", observed_at},
+                };
+                out_evidence["completion_condition"] = "target_reached";
+                out_evidence["settle_duration_ms"] = 200;
+            } else if constexpr (std::is_same_v<T, FollowPathStep>) {
+                const KukaPose final_pose =
+                    step.waypoints.empty() ? KukaPose{} : step.waypoints.back();
+                out_payload = nlohmann::json{
+                    {"completed_waypoints", step.waypoints.size()},
+                    {"actual_pose", kuka_pose_to_ros_json(final_pose)},
+                    {"max_path_deviation_m", 0.0},
+                    {"observed_at", observed_at},
+                };
+                out_evidence["completion_condition"] = "path_completed";
+            } else if constexpr (std::is_same_v<T, RecipeSelectStep>) {
+                out_payload = nlohmann::json{
+                    {"active_program_id", step.program_id},
+                    {"observed_at", observed_at},
+                };
+                out_evidence["completion_condition"] = "program_active";
+            } else if constexpr (std::is_same_v<T, ArcStartStep>) {
+                out_payload = nlohmann::json{
+                    {"arc_established", true},
+                    {"observed_at", observed_at},
+                };
+                out_evidence["completion_condition"] = "arc_established";
+            } else if constexpr (std::is_same_v<T, ArcStopStep>) {
+                out_payload = nlohmann::json{
+                    {"arc_stopped", true},
+                    {"observed_at", observed_at},
+                };
+                out_evidence["completion_condition"] = "arc_stopped";
+            } else if constexpr (std::is_same_v<T, MeasureProcessStep>) {
+                nlohmann::json readings = nlohmann::json::array();
+                for (const auto &ch : step.channels) {
+                    if (ch == "current") {
+                        readings.push_back({
+                            {"channel_id", "current"},
+                            {"value", 182.4},
+                            {"unit", "A"},
+                            {"valid", true},
+                        });
+                    } else if (ch == "voltage") {
+                        readings.push_back({
+                            {"channel_id", "voltage"},
+                            {"value", 22.7},
+                            {"unit", "V"},
+                            {"valid", true},
+                        });
+                    } else {
+                        readings.push_back({
+                            {"channel_id", ch},
+                            {"value", 0.0},
+                            {"unit", ""},
+                            {"valid", true},
+                        });
+                    }
+                }
+                out_payload = nlohmann::json{
+                    {"readings", std::move(readings)},
+                    {"observed_at", observed_at},
+                };
+                out_evidence["completion_condition"] = "measurements_returned";
+            }
+        },
+        payload);
+}
+
+}  // namespace
+
+ProgramExecutor::ProgramExecutor(
+    std::shared_ptr<IKrcTransport> transport,
+    uint32_t step_delay_ms)
+    : transport_(std::move(transport)), step_delay_ms_(step_delay_ms) {}
+
+ExecutionResult ProgramExecutor::execute(
+    const KukaArcTechJobIR &job_ir,
+    const std::atomic<bool> &stop_requested,
+    const FeedbackCallback &feedback_cb,
+    const ProgramPackage *package_override) {
+    ExecutionResult exec_res;
+    exec_res.backend_job_id = "b_" + job_ir.job_id;
+    const std::string mode = transport_ ? transport_->mode_name() : "MOCK";
+
+    nlohmann::json result_doc{
+        {"contract_version", "1.0"},
+        {"job_id", job_ir.job_id},
+        {"trace_id", job_ir.trace_id},
+        {"mode", mode},
+        {"step_results", nlohmann::json::array()},
+    };
+
+    // 由执行线程独占底层启停，避免与服务回调线程发生启停竞态
+    auto stop_transport_once = [&]() -> CommandResult {
+        return transport_->stop_program();
+    };
+
+    auto append_step_terminal = [&](const JobStep &step,
+                                    const std::string &state,
+                                    ErrorCode code,
+                                    const std::string &msg,
+                                    const std::string &raw_evidence = "") {
+        nlohmann::json ev{
+            {"mode", mode},
+            {"simulated", mode == "MOCK"},
+            {"observed_at", utc_now_iso8601()},
+        };
+        if (!raw_evidence.empty()) {
+            ev["raw"] = raw_evidence;
+        }
+        result_doc["step_results"].push_back({
+            {"index", step.index},
+            {"instance_id", step.instance_id},
+            {"instruction_id", step.instruction_id},
+            {"state", state},
+            {"payload", nlohmann::json::object()},
+            {"error_code", to_error_code_string(code)},
+            {"message", msg},
+            {"evidence", std::move(ev)},
+        });
+    };
+
+    auto fill_remaining_steps = [&](std::size_t start_index,
+                                    const std::string &state,
+                                    ErrorCode code,
+                                    const std::string &msg) {
+        for (std::size_t k = start_index; k < job_ir.steps.size(); ++k) {
+            append_step_terminal(job_ir.steps[k], state, code, msg);
+        }
+    };
+
+    auto finalize_failed = [&](ErrorCode code, const std::string &msg,
+                               const std::string &raw_evidence = "") {
+        if (!raw_evidence.empty()) {
+            result_doc["evidence"] = {{"raw", raw_evidence}};
+        }
+        exec_res.outcome = ExecutionOutcome::FAILED;
+        exec_res.error_code = code;
+        exec_res.message = msg;
+        exec_res.result_json = result_doc.dump();
+        return exec_res;
+    };
+
+    auto finalize_canceled = [&](const std::string &msg) {
+        exec_res.outcome = ExecutionOutcome::CANCELED;
+        exec_res.error_code = ErrorCode::OK;
+        exec_res.message = msg;
+        exec_res.result_json = result_doc.dump();
+        return exec_res;
+    };
+
+    auto handle_stop_at_step = [&](std::size_t step_idx, const std::string &cancel_msg) {
+        const auto &step = job_ir.steps[step_idx];
+        const auto stop_res = stop_transport_once();
+        if (!stop_res.ok) {
+            append_step_terminal(
+                step, "FAILED", stop_res.error_code, stop_res.message, stop_res.raw_evidence);
+            fill_remaining_steps(
+                step_idx + 1, "SKIPPED", ErrorCode::OK, "因前序步骤停机失败而跳过。");
+            return finalize_failed(stop_res.error_code, stop_res.message, stop_res.raw_evidence);
+        }
+        append_step_terminal(step, "CANCELED", ErrorCode::OK, cancel_msg);
+        fill_remaining_steps(step_idx + 1, "SKIPPED", ErrorCode::OK, "因作业已停止而未执行。");
+        return finalize_canceled(cancel_msg);
+    };
+
+    if (!transport_) {
+        fill_remaining_steps(0, "SKIPPED", ErrorCode::KA_KRC_UNREACHABLE, "KRC Transport 未初始化。");
+        return finalize_failed(ErrorCode::KA_KRC_UNREACHABLE, "KRC Transport 未初始化。");
+    }
+
+    // 封住非 MOCK Transport 误走模拟输出的安全门：真实反馈采集接入前禁止伪造结果
+    if (mode != "MOCK") {
+        const std::string msg =
+            "当前 Transport 模式 (" + mode + ") 尚未接入真实执行反馈采集，禁止使用模拟结果替代。";
+        fill_remaining_steps(0, "SKIPPED", ErrorCode::KA_PROGRAM_START_FAILED, msg);
+        return finalize_failed(ErrorCode::KA_PROGRAM_START_FAILED, msg);
+    }
+
+    // 启动前先检查是否已收到停止/取消请求，避免取消后仍启动程序
+    if (stop_requested.load()) {
+        const std::string msg = "作业在启动前已按请求取消。";
+        fill_remaining_steps(0, "CANCELED", ErrorCode::OK, msg);
+        return finalize_canceled(msg);
+    }
+
+    // 1. 探活
+    if (const auto probe_res = transport_->probe(); !probe_res.connected) {
+        fill_remaining_steps(0, "SKIPPED", probe_res.error_code, probe_res.message);
+        return finalize_failed(probe_res.error_code, probe_res.message);
+    }
+
+    // 2. 准备程序包并部署（路线 B 接入模板引擎后可通过 package_override 传入真实 SRC/DAT）
+    ProgramPackage pkg;
+    if (package_override != nullptr) {
+        pkg = *package_override;
+    } else {
+        pkg.program_name = job_ir.program_name;
+        pkg.manifest_json = "{}";
+    }
+    exec_res.artifact_manifest_json = pkg.manifest_json;
+
+    if (const auto deploy_res = transport_->deploy(pkg); !deploy_res.ok) {
+        fill_remaining_steps(0, "SKIPPED", deploy_res.error_code, deploy_res.message);
+        return finalize_failed(deploy_res.error_code, deploy_res.message, deploy_res.raw_evidence);
+    }
+
+    if (stop_requested.load()) {
+        const std::string msg = "作业在程序启动前已按请求停止。";
+        fill_remaining_steps(0, "CANCELED", ErrorCode::OK, msg);
+        return finalize_canceled(msg);
+    }
+
+    if (const auto select_res = transport_->select_program(pkg.program_name); !select_res.ok) {
+        fill_remaining_steps(0, "SKIPPED", select_res.error_code, select_res.message);
+        return finalize_failed(select_res.error_code, select_res.message, select_res.raw_evidence);
+    }
+
+    if (stop_requested.load()) {
+        const std::string msg = "作业在程序启动前已按请求停止。";
+        fill_remaining_steps(0, "CANCELED", ErrorCode::OK, msg);
+        return finalize_canceled(msg);
+    }
+
+    if (const auto start_res = transport_->start_program(pkg.program_name); !start_res.ok) {
+        fill_remaining_steps(0, "SKIPPED", start_res.error_code, start_res.message);
+        return finalize_failed(start_res.error_code, start_res.message, start_res.raw_evidence);
+    }
+
+    // 3. 按序执行每一步，并按 A/B 通信定义发布 Feedback 与收集 step_results
+    const std::size_t total_steps = job_ir.steps.size();
+    bool arc_active = false;
+
+    for (std::size_t i = 0; i < total_steps; ++i) {
+        const auto &step = job_ir.steps[i];
+
+        // 检查外部取消/停止请求
+        if (stop_requested.load()) {
+            return handle_stop_at_step(i, "作业已按请求停止。");
+        }
+
+        // 检查底层故障
+        if (const auto faults = transport_->read_faults(); !faults.empty()) {
+            const auto stop_res = stop_transport_once();
+            transport_->set_runtime_state("FAULT", "FAULT", faults.front().message);
+            const std::string orig_msg = "检测到 KRC/ArcTech 故障：" + faults.front().message;
+            if (!stop_res.ok) {
+                const std::string combined_msg =
+                    orig_msg + "；且后续停止失败：" + stop_res.message;
+                const std::string combined_ev =
+                    faults.front().code + "; stop_failed=" + stop_res.raw_evidence;
+                append_step_terminal(
+                    step, "FAILED", ErrorCode::KA_STOP_FAILED, combined_msg, combined_ev);
+                fill_remaining_steps(
+                    i + 1, "SKIPPED", ErrorCode::OK, "因前序步骤故障且停机失败而跳过。");
+                return finalize_failed(ErrorCode::KA_STOP_FAILED, combined_msg, combined_ev);
+            }
+            append_step_terminal(
+                step, "FAILED", ErrorCode::KA_ARCTECH_FAULT, orig_msg, faults.front().code);
+            fill_remaining_steps(i + 1, "SKIPPED", ErrorCode::OK, "因前序步骤发生故障而跳过。");
+            return finalize_failed(ErrorCode::KA_ARCTECH_FAULT, orig_msg, faults.front().code);
+        }
+
+        // 遇到起弧步骤时模拟/执行焊缝许可握手
+        if (std::holds_alternative<ArcStartStep>(step.payload) && job_ir.seam_id > 0) {
+            const auto seam_res = transport_->set_seam_permission(job_ir.seam_id, true);
+            if (!seam_res.granted) {
+                const auto stop_res = stop_transport_once();
+                if (!stop_res.ok) {
+                    const std::string combined_msg =
+                        seam_res.message + "；且后续停止失败：" + stop_res.message;
+                    const std::string combined_ev =
+                        "seam_permission_denied; stop_failed=" + stop_res.raw_evidence;
+                    append_step_terminal(
+                        step, "FAILED", ErrorCode::KA_STOP_FAILED, combined_msg, combined_ev);
+                    fill_remaining_steps(
+                        i + 1, "SKIPPED", ErrorCode::OK, "因前序步骤许可失败且停机失败而跳过。");
+                    return finalize_failed(ErrorCode::KA_STOP_FAILED, combined_msg, combined_ev);
+                }
+                append_step_terminal(step, "FAILED", seam_res.error_code, seam_res.message);
+                fill_remaining_steps(
+                    i + 1, "SKIPPED", ErrorCode::OK, "因前序步骤焊缝许可失败而跳过。");
+                return finalize_failed(seam_res.error_code, seam_res.message);
+            }
+        }
+
+        const ExecutionStage stage = stage_for_step(step.payload);
+        if (std::holds_alternative<ArcStartStep>(step.payload)) {
+            arc_active = true;
+        } else if (std::holds_alternative<ArcStopStep>(step.payload)) {
+            arc_active = false;
+        }
+
+        transport_->set_runtime_state(
+            "RUNNING",
+            arc_active ? "WELDING" : "ARC_OFF",
+            mode + " step active: " + step.instruction_id);
+
+        if (feedback_cb) {
+            const float progress =
+                (static_cast<float>(i) + 0.5f) / static_cast<float>(total_steps);
+            feedback_cb(
+                static_cast<uint8_t>(stage),
+                step.index,
+                progress,
+                step.instruction_id,
+                mode + " step active");
+        }
+
+        // 分段小睡以便及时响应取消/停止请求
+        if (step_delay_ms_ > 0) {
+            const uint32_t slice_ms = 10;
+            uint32_t elapsed = 0;
+            while (elapsed < step_delay_ms_) {
+                if (stop_requested.load()) {
+                    return handle_stop_at_step(i, "作业在执行过程中已按请求停止。");
+                }
+                const uint32_t wait_ms = std::min(slice_ms, step_delay_ms_ - elapsed);
+                std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
+                elapsed += wait_ms;
+            }
+        }
+
+        // 记录步骤完成前再次确认是否收到停止请求，防止最后一步误报 SUCCEEDED
+        if (stop_requested.load()) {
+            return handle_stop_at_step(i, "作业在执行过程中已按请求停止。");
+        }
+
+        const std::string observed_at = utc_now_iso8601();
+        nlohmann::json step_payload;
+        nlohmann::json step_evidence;
+        build_mock_step_output(step.payload, mode, observed_at, step_payload, step_evidence);
+
+        result_doc["step_results"].push_back({
+            {"index", step.index},
+            {"instance_id", step.instance_id},
+            {"instruction_id", step.instruction_id},
+            {"state", "SUCCEEDED"},
+            {"payload", std::move(step_payload)},
+            {"error_code", ""},
+            {"message", mode == "MOCK" ? "simulated completion" : "completed"},
+            {"evidence", std::move(step_evidence)},
+        });
+    }
+
+    transport_->set_runtime_state("IDLE", "ARC_OFF", mode + " completed");
+
+    exec_res.outcome = ExecutionOutcome::SUCCEEDED;
+    exec_res.error_code = ErrorCode::OK;
+    exec_res.message = mode + " completed";
+    exec_res.result_json = result_doc.dump();
+    return exec_res;
+}

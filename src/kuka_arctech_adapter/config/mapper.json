@@ -1,0 +1,13 @@
+{
+  "program_name_prefix": "AI_",
+  "default_seam_id": 1,
+  "tool_id_map": {
+    "welding_torch_01": 1
+  },
+  "frame_id_map": {
+    "base": 1
+  },
+  "recipe_wdat_map": {
+    "WELD_PROGRAM_01": "WDAT_DEMO_01"
+  }
+}

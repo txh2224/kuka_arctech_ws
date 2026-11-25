@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <utility>
+#include <variant>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <nlohmann/json.hpp>
@@ -37,6 +38,7 @@ ErrorCode JobValidator::validate(
 }
 
 //这里的检查是在原子指令被解析为IR之后的检查
+//这部分给哈基米写了，改的太多了
 
 ErrorCode JobValidator::validate_program_name(
     const std::string &program_name,
@@ -70,7 +72,7 @@ ErrorCode JobValidator::validate_pose(
     std::string &error_message) const {
     if (!std::isfinite(pose.x) || !std::isfinite(pose.y) || !std::isfinite(pose.z) ||
         !std::isfinite(pose.a) || !std::isfinite(pose.b) || !std::isfinite(pose.c)) {
-        error_message = label + " 位姿包含非法浮点值（NaN 或 Inf）。";
+        error_message = label + " 位姿包含未赋值或非法浮点值（NaN 或 Inf）。";
         return ErrorCode::KA_JOB_INVALID;
     }
     if (pose.x < config_.min_x_mm || pose.x > config_.max_x_mm ||
@@ -88,12 +90,195 @@ ErrorCode JobValidator::validate_pose(
     return ErrorCode::OK;
 }
 
+ErrorCode JobValidator::validate_step(
+    const MoveJointStep &step,
+    std::string &error_message) const {
+    for (std::size_t i = 0; i < step.joint_names.size(); ++i) {
+        if (step.joint_names[i].empty()) {
+            error_message = "move_joint 第 " + std::to_string(i) + " 个关节名不能为空。";
+            return ErrorCode::KA_JOB_INVALID;
+        }
+        const double q = step.target_rad[i];
+        if (!std::isfinite(q)) {
+            error_message = "move_joint 第 " + std::to_string(i) + " 个关节目标角未赋值或非法。";
+            return ErrorCode::KA_JOB_INVALID;
+        }
+        if (q < config_.min_joint_rad || q > config_.max_joint_rad) {
+            error_message = "move_joint 第 " + std::to_string(i) + " 个关节目标角超出允许范围。";
+            return ErrorCode::KA_JOB_INVALID;
+        }
+    }
+    if (!std::isfinite(step.max_velocity_rad_s) || step.max_velocity_rad_s <= 0.0 ||
+        step.max_velocity_rad_s > config_.max_joint_velocity_rad_s) {
+        error_message = "move_joint 关节速度未赋值或超出允许范围。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+    if (!std::isfinite(step.max_acceleration_rad_s2) || step.max_acceleration_rad_s2 <= 0.0 ||
+        step.max_acceleration_rad_s2 > config_.max_joint_acceleration_rad_s2) {
+        error_message = "move_joint 关节加速度未赋值或超出允许范围。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+    return ErrorCode::OK;
+}
+
+ErrorCode JobValidator::validate_step(
+    const MoveLinearStep &step,
+    std::string &error_message) const {
+    if (const auto err = validate_pose(step.target_pose, "move_linear", error_message);
+        err != ErrorCode::OK) {
+        return err;
+    }
+    if (!std::isfinite(step.speed_m_s) || step.speed_m_s <= 0.0 ||
+        step.speed_m_s > config_.max_lin_speed_m_s) {
+        error_message = "move_linear 速度未赋值或超出允许范围。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+    if (!std::isfinite(step.acceleration_m_s2) || step.acceleration_m_s2 <= 0.0 ||
+        step.acceleration_m_s2 > config_.max_lin_acceleration_m_s2) {
+        error_message = "move_linear 加速度未赋值或超出允许范围。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+    return ErrorCode::OK;
+}
+
+ErrorCode JobValidator::validate_step(
+    const FollowPathStep &step,
+    std::string &error_message) const {
+    if (step.waypoints.empty()) {
+        error_message = "缺少焊接路径点（follow_path.waypoints 为空）。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+    if (step.waypoints.size() < 2) {
+        error_message = "焊接路径至少需要包含起点和终点（至少 2 个点）。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+    if (step.waypoints.size() > config_.max_weld_path_points) {
+        error_message = "焊接路径点数超出 V1 配置上限。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+    if (!std::isfinite(step.speed_m_s) || step.speed_m_s <= 0.0 ||
+        step.speed_m_s > config_.max_weld_speed_m_s) {
+        error_message = "follow_path 焊接速度未赋值或超出允许范围。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+    for (std::size_t i = 0; i < step.waypoints.size(); ++i) {
+        if (const auto err = validate_pose(
+                step.waypoints[i],
+                "follow_path[" + std::to_string(i) + "]",
+                error_message);
+            err != ErrorCode::OK) {
+            return err;
+        }
+    }
+    return ErrorCode::OK;
+}
+
+ErrorCode JobValidator::validate_step(
+    const RecipeSelectStep &step,
+    std::string &error_message) const {
+    if (step.program_id.empty()) {
+        error_message = "welder.recipe.select 缺少 program_id。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+    if (step.weld_data_ref.empty()) {
+        error_message = "welder.recipe.select 缺少映射后的 WDAT 配方名（weld_data_ref）。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+    if (!config_.wdat_allowlist.empty() &&
+        config_.wdat_allowlist.find(step.weld_data_ref) == config_.wdat_allowlist.end()) {
+        error_message = "焊接配方不在允许的 WDAT 白名单内：" + step.weld_data_ref;
+        return ErrorCode::KA_JOB_INVALID;
+    }
+    return ErrorCode::OK;
+}
+
+ErrorCode JobValidator::validate_step(
+    const ArcStartStep &step,
+    std::string &error_message) const {
+    if (step.start_profile_id.empty()) {
+        error_message = "welder.arc.start 缺少 start_profile_id。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+    if (step.lease_ms == 0) {
+        error_message = "welder.arc.start 的 lease_ms 必须大于 0。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+    return ErrorCode::OK;
+}
+
+ErrorCode JobValidator::validate_step(
+    const ArcStopStep &step,
+    std::string &error_message) const {
+    if (step.crater_profile_id.empty()) {
+        error_message = "welder.arc.stop 缺少 crater_profile_id。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+    return ErrorCode::OK;
+}
+
+ErrorCode JobValidator::validate_step(
+    const MeasureProcessStep &step,
+    std::string &error_message) const {
+    if (step.channels.empty()) {
+        error_message = "welder.measure.get_process 缺少 channels。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+    for (const auto &ch : step.channels) {
+        if (ch.empty()) {
+            error_message = "welder.measure.get_process 包含空通道名。";
+            return ErrorCode::KA_JOB_INVALID;
+        }
+        if (!config_.allowed_measure_channels.empty() &&
+            config_.allowed_measure_channels.find(ch) == config_.allowed_measure_channels.end()) {
+            error_message = "不支持的过程量采样通道：" + ch;
+            return ErrorCode::KA_JOB_INVALID;
+        }
+    }
+    return ErrorCode::OK;
+}
+
+ErrorCode JobValidator::validate_sequence(
+    const struct KukaArcTechJobIR &job_ir,
+    std::string &error_message) const {
+    bool has_recipe = false;
+    bool arc_active = false;
+
+    for (const auto &step : job_ir.steps) {
+        if (std::holds_alternative<RecipeSelectStep>(step.payload)) {
+            has_recipe = true;
+        } else if (std::holds_alternative<ArcStartStep>(step.payload)) {
+            if (!has_recipe) {
+                error_message = "序列中在起弧（ARC ON）前缺少焊接配方选择（welder.recipe.select）。";
+                return ErrorCode::KA_JOB_INVALID;
+            }
+            if (arc_active) {
+                error_message = "序列中出现重复起弧（ARC ON），前一次电弧尚未关闭。";
+                return ErrorCode::KA_JOB_INVALID;
+            }
+            arc_active = true;
+        } else if (std::holds_alternative<ArcStopStep>(step.payload)) {
+            if (!arc_active) {
+                error_message = "序列中收弧（ARC OFF）出现在起弧（ARC ON）之前或缺少配对起弧。";
+                return ErrorCode::KA_JOB_INVALID;
+            }
+            arc_active = false;
+        }
+    }
+
+    if (arc_active) {
+        error_message = "序列中起弧（ARC ON）与收弧（ARC OFF）不成对，缺少收弧指令。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+
+    return ErrorCode::OK;
+}
+
 ErrorCode JobValidator::validate_ir(
     const struct KukaArcTechJobIR &job_ir,
     std::string &error_message) const {
     error_message.clear();
 
-    //基础信息
+    // 1. 基础元信息
     if (job_ir.job_id.empty()) {
         error_message = "IR 中 job_id 不能为空。";
         return ErrorCode::KA_JOB_INVALID;
@@ -102,132 +287,78 @@ ErrorCode JobValidator::validate_ir(
         error_message = "IR 中 trace_id 不能为空。";
         return ErrorCode::KA_JOB_INVALID;
     }
-    if (const auto err = validate_program_name(job_ir.program_name, error_message);
-        err != ErrorCode::OK) {
-        return err;
-    }
-
-    //坐标系、焊缝号与 WDAT 配方检查
-    if (job_ir.tool_id < 0 || job_ir.tool_id > config_.max_tool_id) {
-        error_message = "tool_id 未赋值或超出允许范围。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    if (job_ir.base_id < 0 || job_ir.base_id > config_.max_base_id) {
-        error_message = "base_id 未赋值或超出允许范围。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    if (job_ir.seam_id == 0) {
-        error_message = "seam_id 未赋值（必须大于 0）。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    if (!job_ir.dry_run && job_ir.weld_data_ref.empty()) {
-        error_message = "实焊任务缺少焊接配方（weld_data_ref / WDAT）。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    if (!job_ir.weld_data_ref.empty() && !config_.wdat_allowlist.empty() &&
-        config_.wdat_allowlist.find(job_ir.weld_data_ref) == config_.wdat_allowlist.end()) {
-        error_message = "焊接配方不在允许的 WDAT 白名单内：" + job_ir.weld_data_ref;
-        return ErrorCode::KA_JOB_INVALID;
-    }
-
-    //接近段（approach）检查
-    if (job_ir.approach.type != MotionType::PTP &&
-        job_ir.approach.type != MotionType::LIN) {
-        error_message = "approach 运动类型未赋值或不支持（V1 仅允许 PTP 或 LIN）。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    if (!std::isfinite(job_ir.approach.speed) || job_ir.approach.speed < 0.0) {
-        error_message = "approach 速度未赋值或为非法值。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    if (job_ir.approach.speed == 0.0) {
-        error_message = "approach 速度必须大于 0。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    if (job_ir.approach.type == MotionType::PTP &&
-        job_ir.approach.speed > config_.max_ptp_speed_percent) {
-        error_message = "approach PTP 速度超出允许百分比范围。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    if (job_ir.approach.type == MotionType::LIN &&
-        job_ir.approach.speed > config_.max_lin_speed_m_s) {
-        error_message = "approach LIN 速度超出允许范围。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    if (const auto err = validate_pose(job_ir.approach.pose, "approach", error_message);
-        err != ErrorCode::OK) {
-        return err;
-    }
-
-    //焊接路径（weld_path）检查
-    if (job_ir.weld_path.type != WeldPathType::LIN_POLYLINE) {
-        error_message = "weld_path 类型未赋值或不支持（V1 仅支持 LIN_POLYLINE）。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    if (job_ir.weld_path.points.empty()) {
-        error_message = "缺少焊接路径点（weld_path.points 为空）。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    if (job_ir.weld_path.points.size() < 2) {
-        error_message = "焊接路径至少需要包含起点和终点（至少 2 个点）。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    if (job_ir.weld_path.points.size() > config_.max_weld_path_points) {
-        error_message = "焊接路径点数超出 V1 配置上限。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    if (!std::isfinite(job_ir.weld_path.speed) || job_ir.weld_path.speed < 0.0) {
-        error_message = "weld_path 速度未赋值或为非法值。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    if (job_ir.weld_path.speed == 0.0 ||
-        job_ir.weld_path.speed > config_.max_weld_speed_m_s) {
-        error_message = "weld_path 焊接速度超出允许范围。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    for (std::size_t i = 0; i < job_ir.weld_path.points.size(); ++i) {
-        if (const auto err = validate_pose(
-                job_ir.weld_path.points[i],
-                "weld_path[" + std::to_string(i) + "]",
-                error_message);
+    if (!job_ir.program_name.empty()) {
+        if (const auto err = validate_program_name(job_ir.program_name, error_message);
             err != ErrorCode::OK) {
             return err;
         }
     }
-
-    //撤离段（retract）检查
-    if (job_ir.retract.type != MotionType::LIN) {
-        error_message = "retract 运动类型非法（V1 仅允许 LIN）。";
+    if (job_ir.tool_id >= 0 && job_ir.tool_id > config_.max_tool_id) {
+        error_message = "tool_id 超出允许范围。";
         return ErrorCode::KA_JOB_INVALID;
     }
-    if (!std::isfinite(job_ir.retract.speed) || job_ir.retract.speed < 0.0) {
-        error_message = "retract 速度未赋值或为非法值。";
+    if (job_ir.base_id >= 0 && job_ir.base_id > config_.max_base_id) {
+        error_message = "base_id 超出允许范围。";
         return ErrorCode::KA_JOB_INVALID;
     }
-    if (job_ir.retract.speed == 0.0 ||
-        job_ir.retract.speed > config_.max_lin_speed_m_s) {
-        error_message = "retract 速度超出允许范围。";
+    if (job_ir.steps.empty()) {
+        error_message = "IR 中 steps 不能为空。";
         return ErrorCode::KA_JOB_INVALID;
-    }
-    if (const auto err = validate_pose(job_ir.retract.pose, "retract", error_message);
-        err != ErrorCode::OK) {
-        return err;
     }
 
-    //起弧/收弧与 dry_run 一致性检查
-    if (job_ir.arc.start != job_ir.arc.stop) {
-        error_message = "ARC ON 与 ARC OFF 必须成对出现。";
-        return ErrorCode::KA_JOB_INVALID;
-    }
-    if (job_ir.dry_run) {
-        if (job_ir.arc.enabled) {
-            error_message = "dry_run 模式下禁止启用真实引弧（arc.enabled 必须为 false）。";
+    // 2. 逐条检查每一步的元信息与参数，同时统计作业包含的运动/焊接类型
+    bool has_cartesian_step = false;
+    bool has_arc_start = false;
+    for (std::size_t i = 0; i < job_ir.steps.size(); ++i) {
+        const auto &step = job_ir.steps[i];
+        if (step.index != i) {
+            error_message = "步骤索引不连续：期望 " + std::to_string(i) +
+                            "，实际为 " + std::to_string(step.index) + "。";
             return ErrorCode::KA_JOB_INVALID;
         }
-    } else {
-        if (!job_ir.arc.enabled || !job_ir.arc.start || !job_ir.arc.stop) {
-            error_message = "实焊任务必须启用电弧且包含成对的 ARC ON/OFF。";
+        if (step.instruction_id.empty() || step.instance_id.empty() ||
+            step.capability_id.empty()) {
+            error_message = "第 " + std::to_string(i) +
+                            " 步缺少 instruction_id / instance_id / capability_id。";
             return ErrorCode::KA_JOB_INVALID;
+        }
+
+        if (std::holds_alternative<MoveLinearStep>(step.payload) ||
+            std::holds_alternative<FollowPathStep>(step.payload)) {
+            has_cartesian_step = true;
+        } else if (std::holds_alternative<ArcStartStep>(step.payload)) {
+            has_arc_start = true;
+        }
+
+        const auto err = std::visit(
+            [&](const auto &payload) { return validate_step(payload, error_message); },
+            step.payload);
+        if (err != ErrorCode::OK) {
+            return err;
+        }
+    }
+
+    // 3. 按作业实际包含的步骤校验顶层 tool_id / base_id / seam_id
+    if (has_cartesian_step) {
+        if (job_ir.tool_id < 0 || job_ir.tool_id > config_.max_tool_id) {
+            error_message = "包含笛卡尔运动但 tool_id 未赋值或超出允许范围。";
+            return ErrorCode::KA_JOB_INVALID;
+        }
+        if (job_ir.base_id < 0 || job_ir.base_id > config_.max_base_id) {
+            error_message = "包含笛卡尔运动但 base_id 未赋值或超出允许范围。";
+            return ErrorCode::KA_JOB_INVALID;
+        }
+    }
+    if (has_arc_start && !job_ir.dry_run && job_ir.seam_id == 0) {
+        error_message = "实焊任务包含起弧但 seam_id 未赋值（必须大于 0）。";
+        return ErrorCode::KA_JOB_INVALID;
+    }
+
+    // 4. 多步序列的时序与工艺检查（N=1 单条指令跳过多步配对约束）
+    if (job_ir.steps.size() > 1) {
+        if (const auto err = validate_sequence(job_ir, error_message);
+            err != ErrorCode::OK) {
+            return err;
         }
     }
 
@@ -280,11 +411,29 @@ void JobValidator::read_config() {
             config_.max_ptp_speed_percent =
                 j.at("max_ptp_speed_percent").get<double>();
         }
+        if (j.contains("max_joint_velocity_rad_s")) {
+            config_.max_joint_velocity_rad_s =
+                j.at("max_joint_velocity_rad_s").get<double>();
+        }
+        if (j.contains("max_joint_acceleration_rad_s2")) {
+            config_.max_joint_acceleration_rad_s2 =
+                j.at("max_joint_acceleration_rad_s2").get<double>();
+        }
         if (j.contains("max_lin_speed_m_s")) {
             config_.max_lin_speed_m_s = j.at("max_lin_speed_m_s").get<double>();
         }
+        if (j.contains("max_lin_acceleration_m_s2")) {
+            config_.max_lin_acceleration_m_s2 =
+                j.at("max_lin_acceleration_m_s2").get<double>();
+        }
         if (j.contains("max_weld_speed_m_s")) {
             config_.max_weld_speed_m_s = j.at("max_weld_speed_m_s").get<double>();
+        }
+        if (j.contains("min_joint_rad")) {
+            config_.min_joint_rad = j.at("min_joint_rad").get<double>();
+        }
+        if (j.contains("max_joint_rad")) {
+            config_.max_joint_rad = j.at("max_joint_rad").get<double>();
         }
         if (j.contains("min_x_mm")) {
             config_.min_x_mm = j.at("min_x_mm").get<double>();
@@ -314,6 +463,13 @@ void JobValidator::read_config() {
             config_.wdat_allowlist.clear();
             for (const auto &item : j.at("wdat_allowlist")) {
                 config_.wdat_allowlist.insert(item.get<std::string>());
+            }
+        }
+        if (j.contains("allowed_measure_channels") &&
+            j.at("allowed_measure_channels").is_array()) {
+            config_.allowed_measure_channels.clear();
+            for (const auto &item : j.at("allowed_measure_channels")) {
+                config_.allowed_measure_channels.insert(item.get<std::string>());
             }
         }
     } catch (const std::exception &e) {
