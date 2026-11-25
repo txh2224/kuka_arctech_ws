@@ -114,6 +114,13 @@ CommandResult MockKrcTransport::start_program(const std::string &name) {
 CommandResult MockKrcTransport::stop_program() {
     std::lock_guard<std::mutex> lock(mutex_);
     CommandResult res;
+    if (!options_.reachable) {
+        status_.controller_connected = false;
+        res.ok = false;
+        res.error_code = ErrorCode::KA_KRC_UNREACHABLE;
+        res.message = "停止失败：Mock KRC 控制器不可达。";
+        return res;
+    }
     if (options_.fail_stop) {
         res.ok = false;
         res.error_code = ErrorCode::KA_STOP_FAILED;

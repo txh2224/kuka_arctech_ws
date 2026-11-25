@@ -311,10 +311,12 @@ void AdapterNode::publish_status() {
 
     const KrcStatus krc_status = transport_->read_status();
     std::string active_job_id;
+    bool stop_failed_latched = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (current_job_ && (!current_job_->terminal.load() || current_job_->stop_failed.load())) {
             active_job_id = current_job_->job_id;
+            stop_failed_latched = current_job_->stop_failed.load();
         }
     }
 
@@ -326,8 +328,14 @@ void AdapterNode::publish_status() {
     msg.weld_state = krc_status.weld_state;
     msg.current_job_id = active_job_id;
     msg.current_program = krc_status.current_program;
-    msg.fault_code = krc_status.fault_code;
-    msg.message = krc_status.message;
+    msg.fault_code =
+        (stop_failed_latched && krc_status.fault_code.empty())
+            ? to_error_code_string(ErrorCode::KA_STOP_FAILED)
+            : krc_status.fault_code;
+    msg.message =
+        stop_failed_latched
+            ? ("停机未确认（KA_STOP_FAILED），任务槽已锁定：" + krc_status.message)
+            : krc_status.message;
     status_pub_->publish(msg);
 }
 
