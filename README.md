@@ -298,3 +298,5 @@ jq -c 'select(.job_id == "job_mock_002" or .current_job_id == "job_mock_002")' d
 - **待现场条件具备后接入**：
   - 在真实 KRC 示教器上导出含 `ARCON` / `ARCOFF` / `WDAT` 的验证版焊接模板，替换 `straight_weld` 占位模板
   - 实现连接真实 KRC / PLC 的 `VerifiedKrcTransport`（程序自动部署启停 + 实时电流电压采集）及现场验收测试 `KA-T10 ~ KA-T12`
+
+> **注意**：目前 `result_json.step_results` 中的观测数据（实际关节角与位姿、误差、电弧状态、电流电压等）全部是模拟值或目标值回填，每步完成也是靠计时判定，不是靠控制器反馈。逐字段清单、结构上缺失的接口以及上真机前要修的 KRL 问题，见 [真机接入清单](docs/hardware_integration.md)。
