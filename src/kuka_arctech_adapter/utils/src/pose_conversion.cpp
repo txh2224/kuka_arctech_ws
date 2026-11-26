@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace tool {
+namespace utils {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
@@ -81,4 +81,4 @@ RosPose kuka_to_ros_pose(const KukaPose &pose) {
     };
 }
 
-}  // namespace tool
+}  // namespace utils

@@ -1,0 +1,67 @@
+{
+  "job_id": "job_single_rob015",
+  "trace_id": "trace_single_rob015",
+  "backend": "kuka_arctech",
+  "dry_run": true,
+  "instructions": [
+    {
+      "schema_version": "1.0",
+      "instruction_id": "ROB-015",
+      "instance_id": "inst_single_rob015",
+      "correlation_id": "task_single_rob015",
+      "target_device": "robot_01",
+      "capability_id": "robot.motion.follow_path",
+      "action": "FollowCartesianPath",
+      "object_json": {
+        "object_id": "robot_tcp",
+        "frame_id": "base",
+        "tool_id": "welding_torch_01"
+      },
+      "parameter_json": {
+        "waypoints": [
+          {
+            "position_m": [0.45, 0.10, 0.35],
+            "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0]
+          },
+          {
+            "position_m": [0.50, 0.10, 0.35],
+            "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0]
+          },
+          {
+            "position_m": [0.55, 0.14, 0.35],
+            "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0]
+          },
+          {
+            "position_m": [0.60, 0.14, 0.35],
+            "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0]
+          }
+        ],
+        "speed_m_s": 0.05
+      },
+      "constraint_json": {
+        "max_state_age_ms": 1000,
+        "max_path_deviation_m": 0.002,
+        "settle_duration_ms": 200
+      },
+      "safety_json": {
+        "policy_id": "rob.approved_policy",
+        "applied_bundle_ids": [],
+        "constraint_revision": 0
+      },
+      "result_contract_json": {
+        "contract_id": "robot.motion.follow_path.result",
+        "contract_version": "1.0.0",
+        "completion_condition": "path_completed",
+        "required_outputs": [
+          "completed_waypoints",
+          "actual_pose",
+          "max_path_deviation_m",
+          "observed_at"
+        ]
+      },
+      "timeout_ms": 300000,
+      "priority": 5,
+      "failure_policy": "ABORT_ON_FAILURE"
+    }
+  ]
+}

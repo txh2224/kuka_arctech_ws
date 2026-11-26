@@ -94,6 +94,7 @@ ros2 launch kuka_arctech_adapter kuka_arctech_adapter.launch.py transport_mode:=
 | `log_level` | `info` | 日志级别（`debug` / `info` / `warn` / `error` / `fatal`） |
 | `transport_mode` | `mock` | 传输模式：`mock` 或 `manual`（`verified` 尚未接入，传入会拒绝启动） |
 | `manual_export_dir` | `output` | `manual` 模式下的程序包导出根目录（相对当前工作目录或绝对路径） |
+| `debug_dir` | `debug` | 调试记录目录（相对当前工作目录或绝对路径），空字符串关闭记录 |
 
 ### 2. 使用 `sim_A` 发送测试任务
 
@@ -132,6 +133,19 @@ ros2 run rclcpp_components component_container
 ros2 component load /ComponentManager kuka_arctech_adapter AdapterNode
 ros2 component list
 ros2 component unload /ComponentManager 1
+```
+
+### 5. 查看调试记录
+
+从工作区根目录启动 Adapter 时，每次启动会在 `debug/` 生成一个 JSONL 文件，日志会打印文件路径。每行是一条带 UTC 时间的记录。ROS 消息中的 `*_json` 字段保留为字符串，便于排查格式错误。文件由后台线程写入，队列满时通过 `recorder_dropped` 记录丢弃条数。
+
+- `action_goal` 记录完整 Goal、是否接单及原因。`action_feedback`、`action_cancel` 和 `action_result` 可以按 `goal_uuid`、`job_id` 或 `trace_id` 关联。
+- `stop_request` 和 `stop_response` 记录停止服务的请求、受理结果及说明。`backend_status` 在状态变化时记录连接、程序、焊接状态和故障码。
+
+例如，用 `jq` 筛出一条作业在各次运行中的记录。
+
+```zsh
+jq -c 'select(.job_id == "job_mock_002" or .current_job_id == "job_mock_002")' debug/*.jsonl
 ```
 
 ## 配置与黄金模板

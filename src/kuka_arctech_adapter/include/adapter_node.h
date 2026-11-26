@@ -22,6 +22,10 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
+namespace utils {
+class DebugRecorder;
+}
+
 class active_job
 {//从师兄那里学来的方法,这样可以直接记录当前正在执行的任务的uuid和job_id,方便后续的处理
 public:
@@ -80,10 +84,19 @@ private:
         const std::string &instruction_id,
         const std::string &message);
 
+    void finish_action(
+        ExecuteGoalHandle &goal_handle,
+        const std::shared_ptr<ExecuteBackendJob::Result> &result,
+        ExecutionOutcome outcome);
+
     //停止服务回调与周期状态发布
     void stop_job_callback(
         const std::shared_ptr<StopBackendJob::Request> request,
         std::shared_ptr<StopBackendJob::Response> response);
+
+    void handle_stop_job(
+        const StopBackendJob::Request &request,
+        StopBackendJob::Response &response);
 
     void publish_status();
 
@@ -95,6 +108,7 @@ private:
     StaticChecker static_checker_;//生成程序包静态检查与manifest生成器
     std::shared_ptr<IKrcTransport> transport_;//底层KRC通信抽象（支持mock/manual）
     ProgramExecutor program_executor_;//作业执行器
+    std::unique_ptr<utils::DebugRecorder> debug_recorder_;
 
     //这里定义动作的Server指针
     rclcpp_action::Server<ExecuteBackendJob>::SharedPtr execute_action_;

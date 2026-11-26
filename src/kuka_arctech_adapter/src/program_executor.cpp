@@ -36,7 +36,7 @@ ExecutionResult ProgramExecutor::execute(
     exec_res.backend_job_id = "b_" + job_ir.job_id;
     const std::string mode = transport_ ? transport_->mode_name() : "MOCK";
 
-    auto result_doc = tool::make_job_result_json(job_ir.job_id, job_ir.trace_id, mode);
+    auto result_doc = utils::make_job_result_json(job_ir.job_id, job_ir.trace_id, mode);
 
     // 由执行线程独占底层启停，先切到可观测的 STOPPING 状态再停机
     auto stop_transport_once = [&]() -> CommandResult {
@@ -61,7 +61,7 @@ ExecutionResult ProgramExecutor::execute(
                                     const std::string &msg,
                                     const std::string &raw_evidence = "") {
         result_doc["step_results"].push_back(
-            tool::make_terminal_step_json(step, mode, state, code, msg, raw_evidence));
+            utils::make_terminal_step_json(step, mode, state, code, msg, raw_evidence));
     };
 
     auto fill_remaining_steps = [&](std::size_t start_index,
@@ -165,7 +165,7 @@ ExecutionResult ProgramExecutor::execute(
                     mode + " querying process measurements");
             }
 
-            result_doc["step_results"].push_back(tool::make_mock_step_json(step, mode, "OK"));
+            result_doc["step_results"].push_back(utils::make_mock_step_json(step, mode, "OK"));
         }
 
         exec_res.outcome = ExecutionOutcome::SUCCEEDED;
@@ -224,7 +224,7 @@ ExecutionResult ProgramExecutor::execute(
         const std::string wait_msg =
             deploy_res.message + "（Manual 模式无法自动在 KRC 上启动，作业尚未执行完成）";
         for (const auto &step : job_ir.steps) {
-            auto step_json = tool::make_terminal_step_json(
+            auto step_json = utils::make_terminal_step_json(
                 step,
                 mode,
                 "SKIPPED",
@@ -422,7 +422,7 @@ ExecutionResult ProgramExecutor::execute(
             return handle_stop_at_step(i, "作业在执行过程中已按请求停止。");
         }
 
-        result_doc["step_results"].push_back(tool::make_mock_step_json(
+        result_doc["step_results"].push_back(utils::make_mock_step_json(
             step, mode, mode == "MOCK" ? "simulated completion" : "completed"));
     }
 

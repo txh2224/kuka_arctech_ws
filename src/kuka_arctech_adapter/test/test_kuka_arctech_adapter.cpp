@@ -3,13 +3,16 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "debug_recorder.h"
 #include "error_code.h"
 #include "job_ir.h"
 #include "job_validator.h"
@@ -454,4 +457,157 @@ TEST(KukaArcTechAdapterTest, KA_T09_StopFailedNormalizationAndManualSemantics) {
     EXPECT_TRUE(std::filesystem::exists(export_root / pkg.program_name / "artifact_manifest.json"));
 
     std::filesystem::remove_all(export_root);
+}
+
+TEST(KukaArcTechAdapterTest, DebugRecorderCapturesTrafficAndDeduplicatesStatus) {
+    namespace fs = std::filesystem;
+    using ExecuteBackendJob = atomic_adapter_interfaces::action::ExecuteBackendJob;
+    using StopBackendJob = atomic_adapter_interfaces::srv::StopBackendJob;
+
+    const auto directory = fs::temp_directory_path() /
+        ("kuka_arctech_debug_test_" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(fs::create_directory(directory));
+    struct TempDirectory {
+        fs::path path;
+        ~TempDirectory() {
+            std::error_code error;
+            fs::remove_all(path, error);
+        }
+    };
+    const TempDirectory cleanup{directory};
+
+    constexpr auto node_name = "adapter_debug_test";
+    rclcpp_action::GoalUUID uuid{};
+    uuid.front() = 0x12;
+    uuid.back() = 0xab;
+
+    auto goal = make_goal("job_debug");
+    auto &instruction = goal.instructions.emplace_back(make_joint_inst("inst_debug"));
+    instruction.schema_version = "1.0";
+    instruction.correlation_id = "correlation_debug";
+    instruction.target_device = "robot_01";
+    instruction.action = "MoveJoint";
+    instruction.constraint_json = "{\n  \"settle_duration_ms\": 200\n}";
+    instruction.safety_json = R"({ "policy_id": "approved" })";
+    instruction.result_contract_json = R"({ "completion_condition": "target_reached" })";
+    instruction.timeout_ms = 1000;
+    instruction.priority = 5;
+    instruction.failure_policy = "ABORT_ON_FAILURE";
+
+    ExecuteBackendJob::Feedback feedback;
+    feedback.stage = 3;
+    feedback.current_index = 0;
+    feedback.progress = 0.5f;
+    feedback.current_instruction_id = instruction.instruction_id;
+    feedback.message = "Running";
+
+    StopBackendJob::Request stop;
+    stop.job_id = goal.job_id;
+    StopBackendJob::Response stop_response;
+    stop_response.accepted = true;
+    stop_response.message = "Stop requested";
+
+    ExecuteBackendJob::Result result;
+    result.success = false;
+    result.backend_job_id = "b_job_debug";
+    result.artifact_manifest_json = R"({ "program_name": "AI_JOB_DEBUG" })";
+    result.result_json = R"({ "step_results": [] })";
+    result.message = "Canceled";
+
+    atomic_adapter_interfaces::msg::BackendStatus status;
+    status.backend = goal.backend;
+    status.current_job_id = goal.job_id;
+    status.controller_connected = true;
+    status.program_state = "RUNNING";
+    status.stamp.sec = 10;
+    status.stamp.nanosec = 250;
+
+    fs::path record_path;
+    {
+        utils::DebugRecorder recorder(directory.string(), node_name);
+        record_path = recorder.path();
+        EXPECT_EQ(record_path.parent_path(), directory);
+        recorder.record_goal(uuid, goal, true, "Accepted");
+        recorder.record_feedback(uuid, goal, feedback);
+        recorder.record_cancel(uuid, goal, true);
+        recorder.record_stop_request(stop);
+        recorder.record_stop_response(stop, stop_response);
+        recorder.record_result(uuid, goal, result, "CANCELED");
+        recorder.record_status(status);
+        ++status.stamp.sec;
+        recorder.record_status(status);
+        status.program_state = "STOPPED";
+        recorder.record_status(status);
+    }
+
+    std::ifstream file(record_path);
+    ASSERT_TRUE(file.is_open());
+    std::vector<nlohmann::json> events;
+    std::vector<std::string> event_names;
+    for (std::string line; std::getline(file, line);) {
+        const auto &event = events.emplace_back(nlohmann::json::parse(line, nullptr, false));
+        ASSERT_TRUE(event.is_object()) << line;
+        event_names.push_back(event.at("event").get<std::string>());
+        EXPECT_EQ(event.at("node"), node_name);
+        EXPECT_FALSE(event.at("timestamp").get<std::string>().empty());
+    }
+
+    const std::vector<std::string> expected_events{
+        "action_goal", "action_feedback", "action_cancel", "stop_request",
+        "stop_response", "action_result", "backend_status", "backend_status"};
+    ASSERT_EQ(event_names, expected_events);
+
+    for (const auto index : {0, 1, 2, 5}) {
+        EXPECT_EQ(events[index].at("goal_uuid"), rclcpp_action::to_string(uuid));
+        EXPECT_EQ(events[index].at("job_id"), goal.job_id);
+        EXPECT_EQ(events[index].at("trace_id"), goal.trace_id);
+    }
+
+    const auto &goal_event = events[0];
+    EXPECT_EQ(goal_event.at("accepted"), true);
+    EXPECT_EQ(goal_event.at("reason"), "Accepted");
+    EXPECT_EQ(goal_event.at("backend"), goal.backend);
+    EXPECT_EQ(goal_event.at("dry_run"), goal.dry_run);
+    const auto &instructions = goal_event.at("instructions");
+    ASSERT_EQ(instructions.size(), 1u);
+    const nlohmann::json expected_instruction{
+        {"schema_version", instruction.schema_version}, {"instruction_id", instruction.instruction_id},
+        {"instance_id", instruction.instance_id}, {"correlation_id", instruction.correlation_id},
+        {"target_device", instruction.target_device}, {"capability_id", instruction.capability_id},
+        {"action", instruction.action}, {"object_json", instruction.object_json},
+        {"parameter_json", instruction.parameter_json}, {"constraint_json", instruction.constraint_json},
+        {"safety_json", instruction.safety_json}, {"result_contract_json", instruction.result_contract_json},
+        {"timeout_ms", instruction.timeout_ms}, {"priority", instruction.priority},
+        {"failure_policy", instruction.failure_policy},
+    };
+    for (const auto &[field, value] : expected_instruction.items()) {
+        EXPECT_EQ(instructions.front().at(field), value) << field;
+    }
+
+    EXPECT_EQ(events[1].at("stage"), feedback.stage);
+    EXPECT_EQ(events[1].at("current_index"), feedback.current_index);
+    EXPECT_EQ(events[1].at("progress"), feedback.progress);
+    EXPECT_EQ(events[1].at("current_instruction_id"), instruction.instruction_id);
+    EXPECT_EQ(events[1].at("message"), feedback.message);
+    EXPECT_EQ(events[2].at("accepted"), true);
+    EXPECT_EQ(events[3].at("job_id"), stop.job_id);
+    EXPECT_EQ(events[4].at("job_id"), stop.job_id);
+    EXPECT_EQ(events[4].at("accepted"), stop_response.accepted);
+    EXPECT_EQ(events[4].at("message"), stop_response.message);
+    EXPECT_EQ(events[5].at("success"), result.success);
+    EXPECT_EQ(events[5].at("action_state"), "CANCELED");
+    EXPECT_EQ(events[5].at("error_code"), result.error_code);
+    EXPECT_EQ(events[5].at("message"), result.message);
+    EXPECT_EQ(events[5].at("backend_job_id"), result.backend_job_id);
+    EXPECT_EQ(events[5].at("artifact_manifest_json"), result.artifact_manifest_json);
+    EXPECT_EQ(events[5].at("result_json"), result.result_json);
+    EXPECT_EQ(events[6].at("stamp").at("sec"), 10);
+    EXPECT_EQ(events[6].at("stamp").at("nanosec"), 250);
+    EXPECT_EQ(events[6].at("backend"), goal.backend);
+    EXPECT_EQ(events[6].at("controller_connected"), status.controller_connected);
+    EXPECT_EQ(events[6].at("current_job_id"), goal.job_id);
+    EXPECT_EQ(events[6].at("program_state"), "RUNNING");
+    EXPECT_EQ(events[7].at("stamp").at("sec"), 11);
+    EXPECT_EQ(events[7].at("program_state"), "STOPPED");
 }

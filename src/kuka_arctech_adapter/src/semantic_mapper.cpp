@@ -35,7 +35,7 @@ bool parse_pose_json(
 
     const auto &pos = pose_obj.at("position_m");
     const auto &quat = pose_obj.at("quaternion_xyzw");
-    tool::RosPose pose;
+    utils::RosPose pose;
     for (std::size_t i = 0; i < pose.position_m.size(); ++i) {
         if (!pos[i].is_number()) {
             error_message = "position_m 元素必须为数值。";
@@ -51,7 +51,7 @@ bool parse_pose_json(
         pose.quaternion_xyzw[i] = quat[i].get<double>();
     }
 
-    if (!tool::ros_to_kuka_pose(pose, out_pose)) {
+    if (!utils::ros_to_kuka_pose(pose, out_pose)) {
         error_message = "quaternion_xyzw 模长非法（不能为零向量或 NaN）。";
         return false;
     }

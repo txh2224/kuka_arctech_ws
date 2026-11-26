@@ -1,0 +1,58 @@
+{
+  "job_id": "job_single_rob011",
+  "trace_id": "trace_single_rob011",
+  "backend": "kuka_arctech",
+  "dry_run": true,
+  "instructions": [
+    {
+      "schema_version": "1.0",
+      "instruction_id": "ROB-011",
+      "instance_id": "inst_single_rob011",
+      "correlation_id": "task_single_rob011",
+      "target_device": "robot_01",
+      "capability_id": "robot.motion.move_linear",
+      "action": "MoveLinear",
+      "object_json": {
+        "object_id": "robot_tcp",
+        "frame_id": "base",
+        "tool_id": "welding_torch_01"
+      },
+      "parameter_json": {
+        "target_pose": {
+          "position_m": [0.52, 0.14, 0.38],
+          "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0]
+        },
+        "speed_m_s": 0.12,
+        "acceleration_m_s2": 0.5
+      },
+      "constraint_json": {
+        "max_state_age_ms": 1000,
+        "position_tolerance_m": 0.0005,
+        "orientation_tolerance_rad": 0.005,
+        "max_path_deviation_m": 0.001,
+        "settle_duration_ms": 200
+      },
+      "safety_json": {
+        "policy_id": "rob.approved_policy",
+        "applied_bundle_ids": [],
+        "constraint_revision": 0
+      },
+      "result_contract_json": {
+        "contract_id": "robot.motion.move_linear.result",
+        "contract_version": "1.0.0",
+        "completion_condition": "target_reached",
+        "required_outputs": [
+          "actual_pose",
+          "position_error_m",
+          "orientation_error_rad",
+          "max_path_deviation_m",
+          "settled",
+          "observed_at"
+        ]
+      },
+      "timeout_ms": 120000,
+      "priority": 5,
+      "failure_policy": "ABORT_ON_FAILURE"
+    }
+  ]
+}

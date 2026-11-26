@@ -5,7 +5,7 @@
 
 #include "job_ir.h"
 
-namespace tool {
+namespace utils {
 
 struct RosPose {
     std::array<double, 3> position_m;
@@ -16,6 +16,6 @@ struct RosPose {
 bool ros_to_kuka_pose(const RosPose &pose, KukaPose &out_pose);
 RosPose kuka_to_ros_pose(const KukaPose &pose);
 
-}  // namespace tool
+}  // namespace utils
 
 #endif  // POSE_CONVERSION_H

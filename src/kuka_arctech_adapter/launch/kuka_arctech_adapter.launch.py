@@ -2,6 +2,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -30,6 +31,11 @@ def generate_launch_description():
         default_value="",
         description="Optional override directory for KRL golden templates (empty uses installed share/templates).",
     )
+    debug_dir_arg = DeclareLaunchArgument(
+        "debug_dir",
+        default_value="debug",
+        description="Directory for Action, Stop service and status debug records. Empty disables recording.",
+    )
 
     adapter_node = Node(
         package="kuka_arctech_adapter",
@@ -42,6 +48,7 @@ def generate_launch_description():
                 "transport_mode": LaunchConfiguration("transport_mode"),
                 "manual_export_dir": LaunchConfiguration("manual_export_dir"),
                 "templates_dir": LaunchConfiguration("templates_dir"),
+                "debug_dir": ParameterValue(LaunchConfiguration("debug_dir"), value_type=str),
             }
         ],
         arguments=["--ros-args", "--log-level", LaunchConfiguration("log_level")],
@@ -54,6 +61,7 @@ def generate_launch_description():
             transport_mode_arg,
             manual_export_dir_arg,
             templates_dir_arg,
+            debug_dir_arg,
             adapter_node,
         ]
     )

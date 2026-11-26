@@ -1,5 +1,5 @@
-#ifndef TOOL_RESULT_JSON_H
-#define TOOL_RESULT_JSON_H
+#ifndef UTILS_RESULT_JSON_H
+#define UTILS_RESULT_JSON_H
 
 #include <string>
 
@@ -9,7 +9,7 @@
 #include "error_code.h"
 #include "job_ir.h"
 
-namespace tool {
+namespace utils {
 
 // 初始化作业结果，写入契约版本、作业 ID、追踪 ID 和后端模式。
 // 执行器按 Goal 的原始顺序向 step_results 追加逐步结果。
@@ -42,6 +42,6 @@ nlohmann::json make_mock_step_json(
     const std::string &mode,
     const std::string &message);
 
-}  // namespace tool
+}  // namespace utils
 
-#endif  // TOOL_RESULT_JSON_H
+#endif  // UTILS_RESULT_JSON_H

@@ -81,7 +81,7 @@ void StaticChecker::load_config(const std::string &config_path) {
 }
 
 std::string StaticChecker::sha256_hex(const std::string &data) {
-    return tool::sha256_hex(data);
+    return utils::sha256_hex(data);
 }
 
 ErrorCode StaticChecker::check_and_build_manifest(

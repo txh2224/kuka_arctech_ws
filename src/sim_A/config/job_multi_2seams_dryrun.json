@@ -1,0 +1,312 @@
+{
+  "job_id": "job_2seams_dryrun",
+  "trace_id": "trace_2seams_dryrun",
+  "backend": "kuka_arctech",
+  "dry_run": true,
+  "instructions": [
+    {
+      "schema_version": "1.0",
+      "instruction_id": "ROB-010",
+      "instance_id": "inst_2s_01",
+      "correlation_id": "task_2seams_dryrun",
+      "target_device": "robot_01",
+      "capability_id": "robot.motion.move_joint",
+      "action": "MoveJoint",
+      "object_json": {
+        "object_id": "robot_tcp"
+      },
+      "parameter_json": {
+        "joint_names": ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"],
+        "target_rad": [0.0, -0.7, 1.2, 0.0, 1.05, 0.0],
+        "max_velocity_rad_s": 0.5,
+        "max_acceleration_rad_s2": 1.0
+      },
+      "constraint_json": {
+        "max_state_age_ms": 1000,
+        "joint_tolerance_rad": 0.01,
+        "settle_velocity_rad_s": 0.01,
+        "settle_duration_ms": 200
+      },
+      "safety_json": {
+        "policy_id": "rob.approved_policy",
+        "applied_bundle_ids": [],
+        "constraint_revision": 0
+      },
+      "result_contract_json": {
+        "contract_id": "robot.motion.move_joint.result",
+        "contract_version": "1.0.0",
+        "completion_condition": "target_reached",
+        "required_outputs": ["joint_names", "actual_rad", "max_error_rad", "settled", "observed_at"]
+      },
+      "timeout_ms": 120000,
+      "priority": 5,
+      "failure_policy": "ABORT_ON_FAILURE"
+    },
+    {
+      "schema_version": "1.0",
+      "instruction_id": "WLD-003",
+      "instance_id": "inst_2s_02",
+      "correlation_id": "task_2seams_dryrun",
+      "target_device": "welder_01",
+      "capability_id": "welder.recipe.select",
+      "action": "SelectWeldProgram",
+      "object_json": {
+        "object_id": "welder"
+      },
+      "parameter_json": {
+        "program_id": "WELD_PROGRAM_01"
+      },
+      "constraint_json": {
+        "max_state_age_ms": 1000
+      },
+      "safety_json": {
+        "policy_id": "wld.approved_policy",
+        "applied_bundle_ids": [],
+        "constraint_revision": 0
+      },
+      "result_contract_json": {
+        "contract_id": "welder.recipe.select.result",
+        "contract_version": "1.0.0",
+        "completion_condition": "program_active",
+        "required_outputs": ["active_program_id", "observed_at"]
+      },
+      "timeout_ms": 3000,
+      "priority": 5,
+      "failure_policy": "ABORT_ON_FAILURE"
+    },
+    {
+      "schema_version": "1.0",
+      "instruction_id": "ROB-015",
+      "instance_id": "inst_2s_03",
+      "correlation_id": "task_2seams_dryrun",
+      "target_device": "robot_01",
+      "capability_id": "robot.motion.follow_path",
+      "action": "FollowCartesianPath",
+      "object_json": {
+        "object_id": "robot_tcp",
+        "frame_id": "base",
+        "tool_id": "welding_torch_01"
+      },
+      "parameter_json": {
+        "waypoints": [
+          {
+            "position_m": [0.45, 0.08, 0.35],
+            "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0]
+          },
+          {
+            "position_m": [0.55, 0.08, 0.35],
+            "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0]
+          }
+        ],
+        "speed_m_s": 0.03
+      },
+      "constraint_json": {
+        "max_state_age_ms": 1000,
+        "max_path_deviation_m": 0.002,
+        "settle_duration_ms": 200
+      },
+      "safety_json": {
+        "policy_id": "rob.approved_policy",
+        "applied_bundle_ids": [],
+        "constraint_revision": 0
+      },
+      "result_contract_json": {
+        "contract_id": "robot.motion.follow_path.result",
+        "contract_version": "1.0.0",
+        "completion_condition": "path_completed",
+        "required_outputs": [
+          "completed_waypoints",
+          "actual_pose",
+          "max_path_deviation_m",
+          "observed_at"
+        ]
+      },
+      "timeout_ms": 300000,
+      "priority": 5,
+      "failure_policy": "ABORT_ON_FAILURE"
+    },
+    {
+      "schema_version": "1.0",
+      "instruction_id": "ROB-011",
+      "instance_id": "inst_2s_04",
+      "correlation_id": "task_2seams_dryrun",
+      "target_device": "robot_01",
+      "capability_id": "robot.motion.move_linear",
+      "action": "MoveLinear",
+      "object_json": {
+        "object_id": "robot_tcp",
+        "frame_id": "base",
+        "tool_id": "welding_torch_01"
+      },
+      "parameter_json": {
+        "target_pose": {
+          "position_m": [0.55, 0.16, 0.42],
+          "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0]
+        },
+        "speed_m_s": 0.15,
+        "acceleration_m_s2": 0.6
+      },
+      "constraint_json": {
+        "max_state_age_ms": 1000,
+        "position_tolerance_m": 0.0005,
+        "orientation_tolerance_rad": 0.005,
+        "max_path_deviation_m": 0.001,
+        "settle_duration_ms": 200
+      },
+      "safety_json": {
+        "policy_id": "rob.approved_policy",
+        "applied_bundle_ids": [],
+        "constraint_revision": 0
+      },
+      "result_contract_json": {
+        "contract_id": "robot.motion.move_linear.result",
+        "contract_version": "1.0.0",
+        "completion_condition": "target_reached",
+        "required_outputs": [
+          "actual_pose",
+          "position_error_m",
+          "orientation_error_rad",
+          "max_path_deviation_m",
+          "settled",
+          "observed_at"
+        ]
+      },
+      "timeout_ms": 120000,
+      "priority": 5,
+      "failure_policy": "ABORT_ON_FAILURE"
+    },
+    {
+      "schema_version": "1.0",
+      "instruction_id": "ROB-015",
+      "instance_id": "inst_2s_05",
+      "correlation_id": "task_2seams_dryrun",
+      "target_device": "robot_01",
+      "capability_id": "robot.motion.follow_path",
+      "action": "FollowCartesianPath",
+      "object_json": {
+        "object_id": "robot_tcp",
+        "frame_id": "base",
+        "tool_id": "welding_torch_01"
+      },
+      "parameter_json": {
+        "waypoints": [
+          {
+            "position_m": [0.45, 0.16, 0.35],
+            "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0]
+          },
+          {
+            "position_m": [0.55, 0.16, 0.35],
+            "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0]
+          }
+        ],
+        "speed_m_s": 0.03
+      },
+      "constraint_json": {
+        "max_state_age_ms": 1000,
+        "max_path_deviation_m": 0.002,
+        "settle_duration_ms": 200
+      },
+      "safety_json": {
+        "policy_id": "rob.approved_policy",
+        "applied_bundle_ids": [],
+        "constraint_revision": 0
+      },
+      "result_contract_json": {
+        "contract_id": "robot.motion.follow_path.result",
+        "contract_version": "1.0.0",
+        "completion_condition": "path_completed",
+        "required_outputs": [
+          "completed_waypoints",
+          "actual_pose",
+          "max_path_deviation_m",
+          "observed_at"
+        ]
+      },
+      "timeout_ms": 300000,
+      "priority": 5,
+      "failure_policy": "ABORT_ON_FAILURE"
+    },
+    {
+      "schema_version": "1.0",
+      "instruction_id": "WLD-024",
+      "instance_id": "inst_2s_06",
+      "correlation_id": "task_2seams_dryrun",
+      "target_device": "welder_01",
+      "capability_id": "welder.measure.get_process",
+      "action": "GetWeldMeasurements",
+      "object_json": {
+        "object_id": "welder"
+      },
+      "parameter_json": {
+        "channels": ["current", "voltage"]
+      },
+      "constraint_json": {
+        "max_state_age_ms": 500
+      },
+      "safety_json": {
+        "policy_id": "wld.approved_policy",
+        "applied_bundle_ids": [],
+        "constraint_revision": 0
+      },
+      "result_contract_json": {
+        "contract_id": "welder.measure.get_process.result",
+        "contract_version": "1.0.0",
+        "completion_condition": "measurements_returned",
+        "required_outputs": ["readings", "observed_at"]
+      },
+      "timeout_ms": 3000,
+      "priority": 5,
+      "failure_policy": "ABORT_ON_FAILURE"
+    },
+    {
+      "schema_version": "1.0",
+      "instruction_id": "ROB-011",
+      "instance_id": "inst_2s_07",
+      "correlation_id": "task_2seams_dryrun",
+      "target_device": "robot_01",
+      "capability_id": "robot.motion.move_linear",
+      "action": "MoveLinear",
+      "object_json": {
+        "object_id": "robot_tcp",
+        "frame_id": "base",
+        "tool_id": "welding_torch_01"
+      },
+      "parameter_json": {
+        "target_pose": {
+          "position_m": [0.55, 0.16, 0.45],
+          "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0]
+        },
+        "speed_m_s": 0.15,
+        "acceleration_m_s2": 0.6
+      },
+      "constraint_json": {
+        "max_state_age_ms": 1000,
+        "position_tolerance_m": 0.0005,
+        "orientation_tolerance_rad": 0.005,
+        "max_path_deviation_m": 0.001,
+        "settle_duration_ms": 200
+      },
+      "safety_json": {
+        "policy_id": "rob.approved_policy",
+        "applied_bundle_ids": [],
+        "constraint_revision": 0
+      },
+      "result_contract_json": {
+        "contract_id": "robot.motion.move_linear.result",
+        "contract_version": "1.0.0",
+        "completion_condition": "target_reached",
+        "required_outputs": [
+          "actual_pose",
+          "position_error_m",
+          "orientation_error_rad",
+          "max_path_deviation_m",
+          "settled",
+          "observed_at"
+        ]
+      },
+      "timeout_ms": 120000,
+      "priority": 5,
+      "failure_policy": "ABORT_ON_FAILURE"
+    }
+  ]
+}

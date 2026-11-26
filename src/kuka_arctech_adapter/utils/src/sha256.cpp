@@ -7,7 +7,7 @@
 #include <sstream>
 #include <vector>
 
-namespace tool {
+namespace utils {
 namespace {
 
 inline uint32_t rotr32(uint32_t x, uint32_t n) {
@@ -111,4 +111,4 @@ std::string sha256_hex(const std::string &data) {
     return oss.str();
 }
 
-}  // namespace tool
+}  // namespace utils

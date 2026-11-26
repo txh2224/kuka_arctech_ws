@@ -3,6 +3,7 @@
 /install/
 /log/
 /output/
+/debug/
 /rosbag2_*/
 
 # Reference documents and Office lock files

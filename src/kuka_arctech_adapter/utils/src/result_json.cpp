@@ -12,7 +12,7 @@
 
 #include "pose_conversion.h"
 
-namespace tool {
+namespace utils {
 namespace {
 
 // 生成带毫秒的 UTC 时间戳，供 observed_at 字段使用。
@@ -248,4 +248,4 @@ nlohmann::json make_mock_step_json(
         std::move(evidence));
 }
 
-}  // namespace tool
+}  // namespace utils

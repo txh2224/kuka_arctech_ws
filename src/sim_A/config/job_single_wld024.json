@@ -1,0 +1,40 @@
+{
+  "job_id": "job_single_wld024",
+  "trace_id": "trace_single_wld024",
+  "backend": "kuka_arctech",
+  "dry_run": true,
+  "instructions": [
+    {
+      "schema_version": "1.0",
+      "instruction_id": "WLD-024",
+      "instance_id": "inst_single_wld024",
+      "correlation_id": "task_single_wld024",
+      "target_device": "welder_01",
+      "capability_id": "welder.measure.get_process",
+      "action": "GetWeldMeasurements",
+      "object_json": {
+        "object_id": "welder"
+      },
+      "parameter_json": {
+        "channels": ["current", "voltage"]
+      },
+      "constraint_json": {
+        "max_state_age_ms": 500
+      },
+      "safety_json": {
+        "policy_id": "wld.approved_policy",
+        "applied_bundle_ids": [],
+        "constraint_revision": 0
+      },
+      "result_contract_json": {
+        "contract_id": "welder.measure.get_process.result",
+        "contract_version": "1.0.0",
+        "completion_condition": "measurements_returned",
+        "required_outputs": ["readings", "observed_at"]
+      },
+      "timeout_ms": 3000,
+      "priority": 5,
+      "failure_policy": "ABORT_ON_FAILURE"
+    }
+  ]
+}

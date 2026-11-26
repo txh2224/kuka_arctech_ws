@@ -18,14 +18,15 @@ add_library(adapter_node_component SHARED
   src/semantic_mapper.cpp
   src/static_checker.cpp
   src/template_engine.cpp
-  tool/src/pose_conversion.cpp
-  tool/src/result_json.cpp
-  tool/src/sha256.cpp
+  utils/src/debug_recorder.cpp
+  utils/src/pose_conversion.cpp
+  utils/src/result_json.cpp
+  utils/src/sha256.cpp
 )
 target_compile_features(adapter_node_component PRIVATE cxx_std_17)
 target_include_directories(adapter_node_component PRIVATE
   include
-  tool/include
+  utils/include
 )
 ament_target_dependencies(adapter_node_component PUBLIC
   ament_index_cpp
@@ -78,7 +79,10 @@ if(BUILD_TESTING)
   )
   if(TARGET test_kuka_arctech_adapter)
     target_compile_features(test_kuka_arctech_adapter PRIVATE cxx_std_17)
-    target_include_directories(test_kuka_arctech_adapter PRIVATE include)
+    target_include_directories(test_kuka_arctech_adapter PRIVATE
+      include
+      utils/include
+    )
     target_compile_definitions(test_kuka_arctech_adapter PRIVATE
       KUKA_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )

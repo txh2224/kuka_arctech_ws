@@ -1,4 +1,5 @@
 #include "adapter_node.h"
+#include "debug_recorder.h"
 #include "error_code.h"
 #include "manual_krc_transport.h"
 #include "mock_krc_transport.h"
@@ -15,7 +16,7 @@
 
 namespace {
 
-namespace terminal_color = tool::terminal_color;
+namespace terminal_color = utils::terminal_color;
 
 //一个个人的小喜好，我比较喜欢看一些花花绿绿的输出来区别信息类型
 const char *outcome_color(ExecutionOutcome outcome) {
@@ -71,6 +72,17 @@ AdapterNode::AdapterNode(const rclcpp::NodeOptions &options)
       template_engine_(create_template_engine_from_param(*this)),
       transport_(create_transport_from_param(*this)),
       program_executor_(transport_) {
+    const auto debug_dir = declare_parameter<std::string>("debug_dir", "debug");
+    if (!debug_dir.empty()) {
+        try {
+            debug_recorder_ =
+                std::make_unique<utils::DebugRecorder>(debug_dir, get_fully_qualified_name());
+            RCLCPP_INFO(get_logger(), "调试记录：%s", debug_recorder_->path().c_str());
+        } catch (const std::exception &e) {
+            RCLCPP_WARN(get_logger(), "无法初始化调试记录：%s", e.what());
+        }
+    }
+
     //这里创建动作Server，绑定回调函数
     execute_action_ = rclcpp_action::create_server<ExecuteBackendJob>(
         this,
@@ -276,13 +288,7 @@ void AdapterNode::execute_job(
         }
     }
 
-    if (outcome == ExecutionOutcome::SUCCEEDED) {
-        goal_handle->succeed(result);
-    } else if (outcome == ExecutionOutcome::CANCELED && goal_handle->is_canceling()) {
-        goal_handle->canceled(result);
-    } else {
-        goal_handle->abort(result);
-    }
+    finish_action(*goal_handle, result, outcome);
 }
 
 std::string AdapterNode::make_rejected_result_json(
@@ -291,7 +297,7 @@ std::string AdapterNode::make_rejected_result_json(
     const std::string &message) const 
 {
     const std::string mode = transport_ ? transport_->mode_name() : "MOCK";
-    return tool::make_rejected_result_json(goal, mode, code, message);
+    return utils::make_rejected_result_json(goal, mode, code, message);
 }
 
 FeedbackCallback AdapterNode::make_feedback_callback(
@@ -321,6 +327,29 @@ void AdapterNode::publish_feedback(
     feedback->current_instruction_id = instruction_id;
     feedback->message = message;
     goal_handle.publish_feedback(feedback);
+    if (debug_recorder_) {
+        debug_recorder_->record_feedback(goal_handle.get_goal_id(), *goal_handle.get_goal(), *feedback);
+    }
+}
+
+void AdapterNode::finish_action(
+    ExecuteGoalHandle &goal_handle,
+    const std::shared_ptr<ExecuteBackendJob::Result> &result,
+    ExecutionOutcome outcome) {
+    const char *action_state = "ABORTED";
+    if (outcome == ExecutionOutcome::SUCCEEDED) {
+        goal_handle.succeed(result);
+        action_state = "SUCCEEDED";
+    } else if (outcome == ExecutionOutcome::CANCELED && goal_handle.is_canceling()) {
+        goal_handle.canceled(result);
+        action_state = "CANCELED";
+    } else {
+        goal_handle.abort(result);
+    }
+    if (debug_recorder_) {
+        debug_recorder_->record_result(
+            goal_handle.get_goal_id(), *goal_handle.get_goal(), *result, action_state);
+    }
 }
 
 //下面三个是动作的回调函数
@@ -329,35 +358,49 @@ rclcpp_action::GoalResponse AdapterNode::goal_callback(
     const rclcpp_action::GoalUUID &uuid,
     std::shared_ptr<const ExecuteBackendJob::Goal> goal) {
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (current_job_) {
-        if (current_job_->stop_failed.load()) {
-            RCLCPP_ERROR(
-                get_logger(),
-                "前序任务 %s 停机未确认（KA_STOP_FAILED），拒绝新任务，请先调用 StopBackendJob 确认停机。",
-                current_job_->job_id.c_str());
+    bool accepted = false;
+    const char *reason = "accepted";
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (current_job_) {
+            if (current_job_->stop_failed.load()) {
+                reason = "stop_unconfirmed";
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "前序任务 %s 停机未确认（KA_STOP_FAILED），拒绝新任务，请先调用 StopBackendJob 确认停机。",
+                    current_job_->job_id.c_str());
+            } else {
+                reason = "busy";
+                RCLCPP_WARN(get_logger(), "当前有任务正在执行，拒绝新的任务请求。");
+            }
         } else {
-            RCLCPP_WARN(get_logger(),
-                "当前有任务正在执行，拒绝新的任务请求。");
+            current_job_ = std::make_shared<active_job>(uuid, goal->job_id);
+            accepted = true;
         }
-        return rclcpp_action::GoalResponse::REJECT;
     }
-    //如果当前没有任务正在执行，则接受新的任务请求
-    current_job_ = std::make_shared<active_job>(uuid, goal->job_id);
-
-    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+    if (debug_recorder_) {
+        debug_recorder_->record_goal(uuid, *goal, accepted, reason);
+    }
+    return accepted ? rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE
+                    : rclcpp_action::GoalResponse::REJECT;
 }
 
 rclcpp_action::CancelResponse AdapterNode::cancel_callback(
     std::shared_ptr<ExecuteGoalHandle> goal_handle) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (current_job_ && !current_job_->terminal.load() &&
-        current_job_->uuid == goal_handle->get_goal_id()) {
-        RCLCPP_WARN(get_logger(), "收到任务取消请求: %s", current_job_->job_id.c_str());
-        current_job_->stop_requested.store(true);
-        return rclcpp_action::CancelResponse::ACCEPT;
+    const auto &uuid = goal_handle->get_goal_id();
+    bool accepted = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (current_job_ && !current_job_->terminal.load() && current_job_->uuid == uuid) {
+            RCLCPP_WARN(get_logger(), "收到任务取消请求: %s", current_job_->job_id.c_str());
+            current_job_->stop_requested.store(true);
+            accepted = true;
+        }
     }
-    return rclcpp_action::CancelResponse::REJECT;
+    if (debug_recorder_) {
+        debug_recorder_->record_cancel(uuid, *goal_handle->get_goal(), accepted);
+    }
+    return accepted ? rclcpp_action::CancelResponse::ACCEPT : rclcpp_action::CancelResponse::REJECT;
 }
 
 void AdapterNode::accepted_callback(std::shared_ptr<ExecuteGoalHandle> goal_handle) {
@@ -380,7 +423,7 @@ void AdapterNode::accepted_callback(std::shared_ptr<ExecuteGoalHandle> goal_hand
         result->error_code = to_error_code_string(ErrorCode::KA_PROGRAM_START_FAILED);
         result->message = "当前任务不存在，无法执行。";
 
-        goal_handle->abort(result);
+        finish_action(*goal_handle, result, ExecutionOutcome::FAILED);
         return;
     }
     // 创建新的工作线程
@@ -395,18 +438,30 @@ void AdapterNode::accepted_callback(std::shared_ptr<ExecuteGoalHandle> goal_hand
 void AdapterNode::stop_job_callback(
     const std::shared_ptr<StopBackendJob::Request> request,
     std::shared_ptr<StopBackendJob::Response> response) {
+    if (debug_recorder_) {
+        debug_recorder_->record_stop_request(*request);
+    }
+    handle_stop_job(*request, *response);
+    if (debug_recorder_) {
+        debug_recorder_->record_stop_response(*request, *response);
+    }
+}
+
+void AdapterNode::handle_stop_job(
+    const StopBackendJob::Request &request,
+    StopBackendJob::Response &response) {
     std::shared_ptr<active_job> job;
     bool retry_latched_stop = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!current_job_) {
-            response->accepted = false;
-            response->message = "当前没有正在执行的任务。";
+            response.accepted = false;
+            response.message = "当前没有正在执行的任务。";
             return;
         }
-        if (!request->job_id.empty() && current_job_->job_id != request->job_id) {
-            response->accepted = false;
-            response->message = "请求的 job_id (" + request->job_id +
+        if (!request.job_id.empty() && current_job_->job_id != request.job_id) {
+            response.accepted = false;
+            response.message = "请求的 job_id (" + request.job_id +
                                 ") 与当前任务 (" + current_job_->job_id + ") 不匹配。";
             return;
         }
@@ -416,8 +471,8 @@ void AdapterNode::stop_job_callback(
             current_job_->stop_requested.store(true);
             RCLCPP_WARN(get_logger(), "收到 StopBackendJob 停止请求（已受理）: %s",
                         current_job_->job_id.c_str());
-            response->accepted = true;
-            response->message = "停止请求已受理，正在停止作业。";
+            response.accepted = true;
+            response.message = "停止请求已受理，正在停止作业。";
             return;
         }
 
@@ -429,8 +484,8 @@ void AdapterNode::stop_job_callback(
     }
 
     if (!retry_latched_stop || !job) {
-        response->accepted = false;
-        response->message = "当前任务已结束。";
+        response.accepted = false;
+        response.message = "当前任务已结束。";
         return;
     }
 
@@ -441,11 +496,11 @@ void AdapterNode::stop_job_callback(
         if (current_job_ == job) {
             current_job_.reset();
         }
-        response->accepted = true;
-        response->message = "停机已确认，任务槽已释放。";
+        response.accepted = true;
+        response.message = "停机已确认，任务槽已释放。";
     } else {
-        response->accepted = false;
-        response->message = "停机仍未确认，任务槽保持锁定：" + stop_res.message;
+        response.accepted = false;
+        response.message = "停机仍未确认，任务槽保持锁定：" + stop_res.message;
     }
 }
 
@@ -484,6 +539,9 @@ void AdapterNode::publish_status() {
             ? ("停机未确认（KA_STOP_FAILED），任务槽已锁定：" + krc_status.message)
             : krc_status.message;
     status_pub_->publish(msg);
+    if (debug_recorder_) {
+        debug_recorder_->record_status(msg);
+    }
 }
 
 RCLCPP_COMPONENTS_REGISTER_NODE(AdapterNode)
