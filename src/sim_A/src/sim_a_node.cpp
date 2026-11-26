@@ -12,6 +12,24 @@
 
 namespace {
 
+constexpr const char *kColorReset = "\033[0m";
+constexpr const char *kColorGreen = "\033[1;32m";
+constexpr const char *kColorYellow = "\033[1;33m";
+constexpr const char *kColorRed = "\033[1;31m";
+constexpr const char *kColorCyan = "\033[1;36m";
+constexpr const char *kColorDimCyan = "\033[36m";
+constexpr const char *kColorMagenta = "\033[1;35m";
+
+const char *result_code_color(rclcpp_action::ResultCode code, bool success) {
+    if (code == rclcpp_action::ResultCode::SUCCEEDED && success) {
+        return kColorGreen;
+    }
+    if (code == rclcpp_action::ResultCode::CANCELED) {
+        return kColorYellow;
+    }
+    return kColorRed;
+}
+
 std::string json_field_to_string(const nlohmann::json &obj, const char *key) {
     if (!obj.contains(key) || obj.at(key).is_null()) {
         return "{}";
@@ -161,11 +179,13 @@ void SimANode::send_goal() {
 
     RCLCPP_INFO(
         get_logger(),
-        "已加载任务配置: %s (job_id=%s, dry_run=%s, instructions=%zu)",
+        "%s已加载任务配置: %s (job_id=%s, dry_run=%s, instructions=%zu)%s",
+        kColorCyan,
         resolved_path.c_str(),
         goal.job_id.c_str(),
         goal.dry_run ? "true" : "false",
-        goal.instructions.size());
+        goal.instructions.size(),
+        kColorReset);
 
     RCLCPP_INFO(get_logger(), "等待 Action Server 上线: %s ...", action_name_.c_str());
     const auto wait_ms = std::chrono::milliseconds(
@@ -188,7 +208,7 @@ void SimANode::send_goal() {
     options.result_callback = std::bind(
         &SimANode::result_callback, this, std::placeholders::_1);
 
-    RCLCPP_INFO(get_logger(), "发送 Goal: job_id=%s", goal.job_id.c_str());
+    RCLCPP_INFO(get_logger(), "%s发送 Goal: job_id=%s%s", kColorCyan, goal.job_id.c_str(), kColorReset);
     action_client_->async_send_goal(goal, options);
 }
 
@@ -200,7 +220,11 @@ void SimANode::goal_response_callback(const GoalHandleExecute::SharedPtr &goal_h
     }
 
     active_goal_handle_ = goal_handle;
-    RCLCPP_INFO(get_logger(), "Goal 已被服务端接收（ACCEPTED），等待执行结果...");
+    RCLCPP_INFO(
+        get_logger(),
+        "%sGoal 已被服务端接收（ACCEPTED），等待执行结果...%s",
+        kColorGreen,
+        kColorReset);
 
     if (cancel_after_sec_ > 0.0) {
         const auto cancel_ms = std::chrono::milliseconds(
@@ -223,14 +247,17 @@ void SimANode::goal_response_callback(const GoalHandleExecute::SharedPtr &goal_h
 void SimANode::feedback_callback(
     GoalHandleExecute::SharedPtr,
     const std::shared_ptr<const ExecuteBackendJob::Feedback> feedback) {
+    const char *fb_color = (feedback->stage == 4) ? kColorMagenta : kColorDimCyan;
     RCLCPP_INFO(
         get_logger(),
-        "[Feedback] stage=%u index=%u progress=%.1f%% inst=%s msg='%s'",
+        "%s[Feedback] stage=%u index=%u progress=%.1f%% inst=%s msg='%s'%s",
+        fb_color,
         feedback->stage,
         feedback->current_index,
         feedback->progress * 100.0f,
         feedback->current_instruction_id.c_str(),
-        feedback->message.c_str());
+        feedback->message.c_str(),
+        kColorReset);
 }
 
 void SimANode::result_callback(const GoalHandleExecute::WrappedResult &result) {
@@ -251,26 +278,30 @@ void SimANode::result_callback(const GoalHandleExecute::WrappedResult &result) {
     const auto &res = *result.result;
     RCLCPP_INFO(
         get_logger(),
-        "[Result] status=%s success=%s error_code='%s' backend_job_id='%s' message='%s'",
+        "%s[Result] status=%s success=%s error_code='%s' backend_job_id='%s' message='%s'%s",
+        result_code_color(result.code, res.success),
         result_code_to_string(result.code),
         res.success ? "true" : "false",
         res.error_code.c_str(),
         res.backend_job_id.c_str(),
-        res.message.c_str());
+        res.message.c_str(),
+        kColorReset);
 
     if (!res.artifact_manifest_json.empty() && res.artifact_manifest_json != "{}") {
         try {
             const auto manifest = nlohmann::json::parse(res.artifact_manifest_json);
-            std::cout << "=== artifact_manifest_json ===\n" << manifest.dump(2) << std::endl;
+            std::cout << kColorMagenta << "=== artifact_manifest_json ===" << kColorReset << "\n"
+                      << manifest.dump(2) << std::endl;
         } catch (const std::exception &) {
-            std::cout << "=== artifact_manifest_json ===\n"
+            std::cout << kColorMagenta << "=== artifact_manifest_json ===" << kColorReset << "\n"
                       << res.artifact_manifest_json << std::endl;
         }
     }
 
     try {
         const auto parsed = nlohmann::json::parse(res.result_json);
-        std::cout << "=== result_json ===\n" << parsed.dump(2) << std::endl;
+        std::cout << kColorCyan << "=== result_json ===" << kColorReset << "\n"
+                  << parsed.dump(2) << std::endl;
     } catch (const std::exception &) {
         std::cout << res.result_json << std::endl;
     }

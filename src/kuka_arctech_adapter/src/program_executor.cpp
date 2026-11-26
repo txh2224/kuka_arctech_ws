@@ -1,57 +1,15 @@
 #include "program_executor.h"
+#include "result_json.h"
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
-#include <ctime>
-#include <iomanip>
-#include <sstream>
 #include <thread>
+#include <utility>
 #include <variant>
 
 #include <nlohmann/json.hpp>
 
 namespace {
-
-constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
-
-std::string utc_now_iso8601() {
-    const auto now = std::chrono::system_clock::now();
-    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        now.time_since_epoch()) %
-                    1000;
-    const std::time_t t = std::chrono::system_clock::to_time_t(now);
-    std::tm utc_tm{};
-    gmtime_r(&t, &utc_tm);
-
-    std::ostringstream oss;
-    oss << std::put_time(&utc_tm, "%Y-%m-%dT%H:%M:%S")
-        << '.' << std::setw(3) << std::setfill('0') << ms.count() << 'Z';
-    return oss.str();
-}
-
-nlohmann::json kuka_pose_to_ros_json(const KukaPose &pose) {
-    const double yaw = pose.a * kDegToRad * 0.5;
-    const double pitch = pose.b * kDegToRad * 0.5;
-    const double roll = pose.c * kDegToRad * 0.5;
-
-    const double cy = std::cos(yaw);
-    const double sy = std::sin(yaw);
-    const double cp = std::cos(pitch);
-    const double sp = std::sin(pitch);
-    const double cr = std::cos(roll);
-    const double sr = std::sin(roll);
-
-    const double qw = cr * cp * cy + sr * sp * sy;
-    const double qx = sr * cp * cy - cr * sp * sy;
-    const double qy = cr * sp * cy + sr * cp * sy;
-    const double qz = cr * cp * sy - sr * sp * cy;
-
-    return nlohmann::json{
-        {"position_m", {pose.x / 1000.0, pose.y / 1000.0, pose.z / 1000.0}},
-        {"quaternion_xyzw", {qx, qy, qz, qw}},
-    };
-}
 
 ExecutionStage stage_for_step(const StepPayload &payload) {
     if (std::holds_alternative<ArcStartStep>(payload) ||
@@ -60,108 +18,6 @@ ExecutionStage stage_for_step(const StepPayload &payload) {
         return ExecutionStage::WELDING;
     }
     return ExecutionStage::RUNNING;
-}
-
-void build_mock_step_output(
-    const JobStep &job_step,
-    const std::string &mode,
-    const std::string &observed_at,
-    nlohmann::json &out_payload,
-    nlohmann::json &out_evidence) {
-    const bool simulated = (mode == "MOCK");
-    out_evidence = nlohmann::json{
-        {"mode", mode},
-        {"simulated", simulated},
-        {"observed_at", observed_at},
-    };
-
-    std::visit(
-        [&](const auto &step) {
-            using T = std::decay_t<decltype(step)>;
-            if constexpr (std::is_same_v<T, MoveJointStep>) {
-                out_payload = nlohmann::json{
-                    {"joint_names", step.joint_names},
-                    {"actual_rad", step.target_rad},
-                    {"max_error_rad", 0.0},
-                    {"settled", true},
-                    {"observed_at", observed_at},
-                };
-                out_evidence["completion_condition"] = "target_reached";
-                out_evidence["settle_duration_ms"] = job_step.settle_duration_ms;
-                out_evidence["settle_velocity_rad_s"] = 0.0;
-            } else if constexpr (std::is_same_v<T, MoveLinearStep>) {
-                out_payload = nlohmann::json{
-                    {"actual_pose", kuka_pose_to_ros_json(step.target_pose)},
-                    {"position_error_m", 0.0},
-                    {"orientation_error_rad", 0.0},
-                    {"max_path_deviation_m", 0.0},
-                    {"settled", true},
-                    {"observed_at", observed_at},
-                };
-                out_evidence["completion_condition"] = "target_reached";
-                out_evidence["settle_duration_ms"] = job_step.settle_duration_ms;
-            } else if constexpr (std::is_same_v<T, FollowPathStep>) {
-                const KukaPose final_pose =
-                    step.waypoints.empty() ? KukaPose{} : step.waypoints.back();
-                out_payload = nlohmann::json{
-                    {"completed_waypoints", step.waypoints.size()},
-                    {"actual_pose", kuka_pose_to_ros_json(final_pose)},
-                    {"max_path_deviation_m", 0.0},
-                    {"observed_at", observed_at},
-                };
-                out_evidence["completion_condition"] = "path_completed";
-            } else if constexpr (std::is_same_v<T, RecipeSelectStep>) {
-                out_payload = nlohmann::json{
-                    {"active_program_id", step.program_id},
-                    {"observed_at", observed_at},
-                };
-                out_evidence["completion_condition"] = "program_active";
-            } else if constexpr (std::is_same_v<T, ArcStartStep>) {
-                out_payload = nlohmann::json{
-                    {"arc_established", true},
-                    {"observed_at", observed_at},
-                };
-                out_evidence["completion_condition"] = "arc_established";
-            } else if constexpr (std::is_same_v<T, ArcStopStep>) {
-                out_payload = nlohmann::json{
-                    {"arc_stopped", true},
-                    {"observed_at", observed_at},
-                };
-                out_evidence["completion_condition"] = "arc_stopped";
-            } else if constexpr (std::is_same_v<T, MeasureProcessStep>) {
-                nlohmann::json readings = nlohmann::json::array();
-                for (const auto &ch : step.channels) {
-                    if (ch == "current") {
-                        readings.push_back({
-                            {"channel_id", "current"},
-                            {"value", 182.4},
-                            {"unit", "A"},
-                            {"valid", true},
-                        });
-                    } else if (ch == "voltage") {
-                        readings.push_back({
-                            {"channel_id", "voltage"},
-                            {"value", 22.7},
-                            {"unit", "V"},
-                            {"valid", true},
-                        });
-                    } else {
-                        readings.push_back({
-                            {"channel_id", ch},
-                            {"value", 0.0},
-                            {"unit", ""},
-                            {"valid", true},
-                        });
-                    }
-                }
-                out_payload = nlohmann::json{
-                    {"readings", std::move(readings)},
-                    {"observed_at", observed_at},
-                };
-                out_evidence["completion_condition"] = "measurements_returned";
-            }
-        },
-        job_step.payload);
 }
 
 }  // namespace
@@ -180,13 +36,7 @@ ExecutionResult ProgramExecutor::execute(
     exec_res.backend_job_id = "b_" + job_ir.job_id;
     const std::string mode = transport_ ? transport_->mode_name() : "MOCK";
 
-    nlohmann::json result_doc{
-        {"contract_version", "1.0"},
-        {"job_id", job_ir.job_id},
-        {"trace_id", job_ir.trace_id},
-        {"mode", mode},
-        {"step_results", nlohmann::json::array()},
-    };
+    auto result_doc = tool::make_job_result_json(job_ir.job_id, job_ir.trace_id, mode);
 
     // 由执行线程独占底层启停，先切到可观测的 STOPPING 状态再停机
     auto stop_transport_once = [&]() -> CommandResult {
@@ -210,24 +60,8 @@ ExecutionResult ProgramExecutor::execute(
                                     ErrorCode code,
                                     const std::string &msg,
                                     const std::string &raw_evidence = "") {
-        nlohmann::json ev{
-            {"mode", mode},
-            {"simulated", mode == "MOCK"},
-            {"observed_at", utc_now_iso8601()},
-        };
-        if (!raw_evidence.empty()) {
-            ev["raw"] = raw_evidence;
-        }
-        result_doc["step_results"].push_back({
-            {"index", step.index},
-            {"instance_id", step.instance_id},
-            {"instruction_id", step.instruction_id},
-            {"state", state},
-            {"payload", nlohmann::json::object()},
-            {"error_code", to_error_code_string(code)},
-            {"message", msg},
-            {"evidence", std::move(ev)},
-        });
+        result_doc["step_results"].push_back(
+            tool::make_terminal_step_json(step, mode, state, code, msg, raw_evidence));
     };
 
     auto fill_remaining_steps = [&](std::size_t start_index,
@@ -324,27 +158,14 @@ ExecutionResult ProgramExecutor::execute(
                 const float progress =
                     static_cast<float>(i + 1) / static_cast<float>(total_steps);
                 feedback_cb(
-                    static_cast<uint8_t>(ExecutionStage::RUNNING),
+                    static_cast<uint8_t>(ExecutionStage::WELDING),
                     step.index,
                     progress,
                     step.instruction_id,
                     mode + " querying process measurements");
             }
 
-            const std::string observed_at = utc_now_iso8601();
-            nlohmann::json payload;
-            nlohmann::json evidence;
-            build_mock_step_output(step, mode, observed_at, payload, evidence);
-            result_doc["step_results"].push_back({
-                {"index", step.index},
-                {"instance_id", step.instance_id},
-                {"instruction_id", step.instruction_id},
-                {"state", "SUCCEEDED"},
-                {"payload", payload},
-                {"error_code", ""},
-                {"message", "OK"},
-                {"evidence", evidence},
-            });
+            result_doc["step_results"].push_back(tool::make_mock_step_json(step, mode, "OK"));
         }
 
         exec_res.outcome = ExecutionOutcome::SUCCEEDED;
@@ -403,12 +224,15 @@ ExecutionResult ProgramExecutor::execute(
         const std::string wait_msg =
             deploy_res.message + "（Manual 模式无法自动在 KRC 上启动，作业尚未执行完成）";
         for (const auto &step : job_ir.steps) {
-            append_step_terminal(
+            auto step_json = tool::make_terminal_step_json(
                 step,
-                "WAITING_OPERATOR",
+                mode,
+                "SKIPPED",
                 ErrorCode::KA_PROGRAM_START_FAILED,
                 wait_msg,
                 deploy_res.raw_evidence);
+            step_json["evidence"]["adapter_state"] = "WAITING_OPERATOR";
+            result_doc["step_results"].push_back(std::move(step_json));
         }
         result_doc["export_dir"] = deploy_res.raw_evidence;
         result_doc["execution_completed"] = false;
@@ -598,21 +422,8 @@ ExecutionResult ProgramExecutor::execute(
             return handle_stop_at_step(i, "作业在执行过程中已按请求停止。");
         }
 
-        const std::string observed_at = utc_now_iso8601();
-        nlohmann::json step_payload;
-        nlohmann::json step_evidence;
-        build_mock_step_output(step, mode, observed_at, step_payload, step_evidence);
-
-        result_doc["step_results"].push_back({
-            {"index", step.index},
-            {"instance_id", step.instance_id},
-            {"instruction_id", step.instruction_id},
-            {"state", "SUCCEEDED"},
-            {"payload", std::move(step_payload)},
-            {"error_code", ""},
-            {"message", mode == "MOCK" ? "simulated completion" : "completed"},
-            {"evidence", std::move(step_evidence)},
-        });
+        result_doc["step_results"].push_back(tool::make_mock_step_json(
+            step, mode, mode == "MOCK" ? "simulated completion" : "completed"));
     }
 
     transport_->set_runtime_state("IDLE", "ARC_OFF", mode + " completed");

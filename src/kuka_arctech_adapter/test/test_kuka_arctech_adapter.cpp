@@ -180,8 +180,17 @@ TEST(KukaArcTechAdapterTest, KA_T01_ValidMotionAndReadOnlyQuery) {
     ASSERT_EQ(validator.validate_ir(q_ir, err_msg), ErrorCode::OK) << err_msg;
     EXPECT_TRUE(is_read_only_query_job(q_ir));
 
-    const auto q_res = executor.execute(q_ir, stop_flag, nullptr, nullptr);
+    std::vector<uint8_t> q_stages;
+    const auto q_res = executor.execute(
+        q_ir,
+        stop_flag,
+        [&](uint8_t stage, uint32_t, float, const std::string &, const std::string &) {
+            q_stages.push_back(stage);
+        },
+        nullptr);
     ASSERT_EQ(q_res.outcome, ExecutionOutcome::SUCCEEDED);
+    ASSERT_EQ(q_stages.size(), 1u);
+    EXPECT_EQ(q_stages[0], static_cast<uint8_t>(ExecutionStage::WELDING));
     const auto q_doc = nlohmann::json::parse(q_res.result_json);
     EXPECT_TRUE(q_doc.value("query_only", false));
     ASSERT_EQ(q_doc.at("step_results").size(), 1u);
@@ -434,6 +443,12 @@ TEST(KukaArcTechAdapterTest, KA_T09_StopFailedNormalizationAndManualSemantics) {
     const auto m_res = manual_exec.execute(ir, no_stop, nullptr, &pkg);
     EXPECT_EQ(m_res.outcome, ExecutionOutcome::FAILED);
     EXPECT_EQ(m_res.error_code, ErrorCode::KA_PROGRAM_START_FAILED);
+    const auto m_doc = nlohmann::json::parse(m_res.result_json);
+    ASSERT_EQ(m_doc.at("step_results").size(), 2u);
+    EXPECT_EQ(m_doc.at("step_results")[0].at("state").get<std::string>(), "SKIPPED");
+    EXPECT_EQ(
+        m_doc.at("step_results")[0].at("evidence").at("adapter_state").get<std::string>(),
+        "WAITING_OPERATOR");
     EXPECT_TRUE(std::filesystem::exists(export_root / pkg.program_name / (pkg.program_name + ".src")));
     EXPECT_TRUE(std::filesystem::exists(export_root / pkg.program_name / (pkg.program_name + ".dat")));
     EXPECT_TRUE(std::filesystem::exists(export_root / pkg.program_name / "artifact_manifest.json"));

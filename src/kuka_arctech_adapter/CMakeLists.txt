@@ -18,9 +18,15 @@ add_library(adapter_node_component SHARED
   src/semantic_mapper.cpp
   src/static_checker.cpp
   src/template_engine.cpp
+  tool/src/pose_conversion.cpp
+  tool/src/result_json.cpp
+  tool/src/sha256.cpp
 )
 target_compile_features(adapter_node_component PRIVATE cxx_std_17)
-target_include_directories(adapter_node_component PRIVATE include)
+target_include_directories(adapter_node_component PRIVATE
+  include
+  tool/include
+)
 ament_target_dependencies(adapter_node_component PUBLIC
   ament_index_cpp
   atomic_adapter_interfaces

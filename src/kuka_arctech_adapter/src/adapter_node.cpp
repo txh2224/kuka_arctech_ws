@@ -2,6 +2,8 @@
 #include "error_code.h"
 #include "manual_krc_transport.h"
 #include "mock_krc_transport.h"
+#include "result_json.h"
+#include "terminal_color.h"
 
 #include <algorithm>
 #include <cctype>
@@ -9,10 +11,24 @@
 #include <functional>
 #include <stdexcept>
 
-#include <nlohmann/json.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 
 namespace {
+
+namespace terminal_color = tool::terminal_color;
+
+//一个个人的小喜好，我比较喜欢看一些花花绿绿的输出来区别信息类型
+const char *outcome_color(ExecutionOutcome outcome) {
+    switch (outcome) {
+        case ExecutionOutcome::SUCCEEDED:
+            return terminal_color::kGreen;
+        case ExecutionOutcome::CANCELED:
+            return terminal_color::kYellow;
+        case ExecutionOutcome::FAILED:
+            return terminal_color::kRed;
+    }
+    return terminal_color::kReset;
+}
 
 std::shared_ptr<IKrcTransport> create_transport_from_param(rclcpp::Node &node) {
     const std::string raw_mode = node.declare_parameter<std::string>("transport_mode", "mock");
@@ -24,6 +40,7 @@ std::shared_ptr<IKrcTransport> create_transport_from_param(rclcpp::Node &node) {
         return static_cast<char>(std::tolower(c));
     });
 
+    // 目前仅支持 mock 和 manual 模式，verified 模式尚未接入现场真机接口
     if (mode == "mock") {
         return std::make_shared<MockKrcTransport>();
     }
@@ -38,6 +55,7 @@ std::shared_ptr<IKrcTransport> create_transport_from_param(rclcpp::Node &node) {
         "未知的 transport_mode='" + raw_mode + "'，允许值：mock / manual（后续支持 verified）。");
 }
 
+// 创建模板引擎，若 templates_dir 为空则使用内置模板
 TemplateEngine create_template_engine_from_param(rclcpp::Node &node) {
     const std::string templates_dir = node.declare_parameter<std::string>("templates_dir", "");
     if (!templates_dir.empty()) {
@@ -75,7 +93,14 @@ AdapterNode::AdapterNode(const rclcpp::NodeOptions &options)
         std::chrono::milliseconds(500),
         std::bind(&AdapterNode::publish_status, this));
 
-    RCLCPP_INFO(get_logger(), "AdapterNode initialized (mode=%s).", transport_->mode_name().c_str());
+    const char *mode_color =
+        (transport_->mode_name() == "MANUAL") ? terminal_color::kMagenta : terminal_color::kGreen;
+    RCLCPP_INFO(
+        get_logger(),
+        "%sAdapterNode initialized (mode=%s).%s",
+        mode_color,
+        transport_->mode_name().c_str(),
+        terminal_color::kReset);
 }
 
 AdapterNode::~AdapterNode() {
@@ -96,69 +121,44 @@ void AdapterNode::execute_job(
     std::shared_ptr<active_job> job,
     std::shared_ptr<ExecuteGoalHandle> goal_handle) {
     //这里是执行任务的函数，需要单独开线程来执行，避免阻塞动作的回调线程
-    RCLCPP_INFO(get_logger(), "开始执行任务: %s", job->job_id.c_str());
+    RCLCPP_INFO(
+        get_logger(),
+        "%s开始执行任务: %s%s",
+        terminal_color::kCyan,
+        job->job_id.c_str(),
+        terminal_color::kReset);
 
     const auto goal = goal_handle->get_goal();
+
     auto result = std::make_shared<ExecuteBackendJob::Result>();
     result->success = false;
     result->backend_job_id = "b_" + goal->job_id;
     result->artifact_manifest_json = "{}";
 
-    auto make_rejected_result_json = [&](ErrorCode code, const std::string &msg) {
-        const std::string mode = transport_ ? transport_->mode_name() : "MOCK";
-        nlohmann::json step_results = nlohmann::json::array();
-        for (std::size_t i = 0; i < goal->instructions.size(); ++i) {
-            const auto &inst = goal->instructions[i];
-            step_results.push_back({
-                {"index", static_cast<uint32_t>(i)},
-                {"instance_id", inst.instance_id},
-                {"instruction_id", inst.instruction_id},
-                {"state", "SKIPPED"},
-                {"payload", nlohmann::json::object()},
-                {"error_code", to_error_code_string(code)},
-                {"message", msg},
-                {"evidence", {{"mode", mode}, {"simulated", mode == "MOCK"}}},
-            });
-        }
-        return nlohmann::json{
-            {"contract_version", "1.0"},
-            {"job_id", goal->job_id},
-            {"trace_id", goal->trace_id},
-            {"mode", mode},
-            {"step_results", std::move(step_results)},
-        }.dump();
-    };
-
-    auto publish_feedback = [&](uint8_t stage,
-                                uint32_t current_index,
-                                float progress,
-                                const std::string &instruction_id,
-                                const std::string &message) {
-        auto fb = std::make_shared<ExecuteBackendJob::Feedback>();
-        fb->stage = stage;
-        fb->current_index = current_index;
-        fb->progress = progress;
-        fb->current_instruction_id = instruction_id;
-        fb->message = message;
-        goal_handle->publish_feedback(fb);
-    };
+    //创建反馈回调函数，绑定当前任务的 Action Goal
+    const auto feedback_callback = make_feedback_callback(goal_handle);
 
     ExecutionOutcome outcome = ExecutionOutcome::FAILED;
     std::string error_message;
+    
     //检查当前任务是否合法
+
     publish_feedback(
+        *goal_handle,
         static_cast<uint8_t>(ExecutionStage::VALIDATING),
         0,
         0.0f,
         goal->instructions.empty() ? "" : goal->instructions.front().instruction_id,
         "Validating job");
 
+    //解析
     auto err = job_validator_.validate(*goal, error_message);
+
     if (err != ErrorCode::OK) {
         RCLCPP_ERROR(get_logger(), "%s", error_message.c_str());
         result->error_code = to_error_code_string(err);
         result->message = error_message;
-        result->result_json = make_rejected_result_json(err, error_message);
+        result->result_json = make_rejected_result_json(*goal, err, error_message);
     } else {
         //这里先把任务解析为IR
         KukaArcTechJobIR job_ir;
@@ -167,7 +167,7 @@ void AdapterNode::execute_job(
             RCLCPP_ERROR(get_logger(), "%s", error_message.c_str());
             result->error_code = to_error_code_string(err);
             result->message = error_message;
-            result->result_json = make_rejected_result_json(err, error_message);
+            result->result_json = make_rejected_result_json(*goal, err, error_message);
         } else {
             //然后再检查IR是否合法
             err = job_validator_.validate_ir(job_ir, error_message);
@@ -175,13 +175,14 @@ void AdapterNode::execute_job(
                 RCLCPP_ERROR(get_logger(), "%s", error_message.c_str());
                 result->error_code = to_error_code_string(err);
                 result->message = error_message;
-                result->result_json = make_rejected_result_json(err, error_message);
+                result->result_json = make_rejected_result_json(*goal, err, error_message);
             } else if (is_read_only_query_job(job_ir)) {
+                // 沟槽的，你整个这玩意干嘛？
                 // 只读测量作业（如单条 WLD-024）直接走查询路径，不渲染也不部署 KRL 运动程序
                 const auto exec_res = program_executor_.execute(
                     job_ir,
                     job->stop_requested,
-                    publish_feedback,
+                    feedback_callback,
                     nullptr);
                 outcome = exec_res.outcome;
                 result->success = (exec_res.outcome == ExecutionOutcome::SUCCEEDED);
@@ -190,16 +191,21 @@ void AdapterNode::execute_job(
                 result->backend_job_id = exec_res.backend_job_id;
                 result->artifact_manifest_json = exec_res.artifact_manifest_json;
                 result->result_json = exec_res.result_json;
+
                 RCLCPP_INFO(
                     get_logger(),
-                    "只读查询任务结束: %s (success=%s, error_code=%s) %s",
+                    "%s只读查询任务结束: %s (success=%s, error_code=%s) %s%s",
+                    outcome_color(outcome),
                     goal->job_id.c_str(),
                     result->success ? "true" : "false",
                     result->error_code.empty() ? "NONE" : result->error_code.c_str(),
-                    result->message.c_str());
+                    result->message.c_str(),
+                    terminal_color::kReset);
+
             } else {
                 // 通过黄金模板生成 .src/.dat 并做静态校验和 manifest 生成
                 publish_feedback(
+                    *goal_handle,
                     static_cast<uint8_t>(ExecutionStage::COMPILING),
                     0,
                     0.1f,
@@ -212,7 +218,7 @@ void AdapterNode::execute_job(
                     RCLCPP_ERROR(get_logger(), "%s", error_message.c_str());
                     result->error_code = to_error_code_string(err);
                     result->message = error_message;
-                    result->result_json = make_rejected_result_json(err, error_message);
+                    result->result_json = make_rejected_result_json(*goal, err, error_message);
                 } else {
                     const std::string mode = transport_ ? transport_->mode_name() : "MOCK";
                     err = static_checker_.check_and_build_manifest(
@@ -221,13 +227,13 @@ void AdapterNode::execute_job(
                         RCLCPP_ERROR(get_logger(), "%s", error_message.c_str());
                         result->error_code = to_error_code_string(err);
                         result->message = error_message;
-                        result->result_json = make_rejected_result_json(err, error_message);
+                        result->result_json = make_rejected_result_json(*goal, err, error_message);
                     } else {
                         //通过KRC Transport执行作业并收集逐步结果
                         const auto exec_res = program_executor_.execute(
                             job_ir,
                             job->stop_requested,
-                            publish_feedback,
+                            feedback_callback,
                             &pkg);
                         outcome = exec_res.outcome;
                         result->success = (exec_res.outcome == ExecutionOutcome::SUCCEEDED);
@@ -236,13 +242,17 @@ void AdapterNode::execute_job(
                         result->backend_job_id = exec_res.backend_job_id;
                         result->artifact_manifest_json = exec_res.artifact_manifest_json;
                         result->result_json = exec_res.result_json;
+
                         RCLCPP_INFO(
                             get_logger(),
-                            "任务结束: %s (success=%s, error_code=%s) %s",
+                            "%s任务结束: %s (success=%s, error_code=%s) %s%s",
+                            outcome_color(outcome),
                             goal->job_id.c_str(),
                             result->success ? "true" : "false",
                             result->error_code.empty() ? "NONE" : result->error_code.c_str(),
-                            result->message.c_str());
+                            result->message.c_str(),
+                            terminal_color::kReset);
+
                     }
                 }
             }
@@ -273,6 +283,44 @@ void AdapterNode::execute_job(
     } else {
         goal_handle->abort(result);
     }
+}
+
+std::string AdapterNode::make_rejected_result_json(
+    const ExecuteBackendJob::Goal &goal,
+    ErrorCode code,
+    const std::string &message) const 
+{
+    const std::string mode = transport_ ? transport_->mode_name() : "MOCK";
+    return tool::make_rejected_result_json(goal, mode, code, message);
+}
+
+FeedbackCallback AdapterNode::make_feedback_callback(
+    const std::shared_ptr<ExecuteGoalHandle> &goal_handle) {
+    // 执行器只提供进度数据，这里绑定当前作业的 Action Goal。
+    return [this, goal_handle](
+        uint8_t stage,
+        uint32_t current_index,
+        float progress,
+        const std::string &instruction_id,
+        const std::string &message) {
+        publish_feedback(*goal_handle, stage, current_index, progress, instruction_id, message);
+    };
+}
+
+void AdapterNode::publish_feedback(
+    ExecuteGoalHandle &goal_handle,
+    uint8_t stage,
+    uint32_t current_index,
+    float progress,
+    const std::string &instruction_id,
+    const std::string &message) {
+    auto feedback = std::make_shared<ExecuteBackendJob::Feedback>();
+    feedback->stage = stage;
+    feedback->current_index = current_index;
+    feedback->progress = progress;
+    feedback->current_instruction_id = instruction_id;
+    feedback->message = message;
+    goal_handle.publish_feedback(feedback);
 }
 
 //下面三个是动作的回调函数

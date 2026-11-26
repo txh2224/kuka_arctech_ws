@@ -21,6 +21,7 @@ public:
         ProgramPackage &pkg,
         std::string &error_message) const;
 
+    // 摘要计算的兼容入口，供现有调用方与产物清单中的哈希值比对。
     static std::string sha256_hex(const std::string &data);
 
 private:

@@ -1,8 +1,7 @@
 #include "semantic_mapper.h"
+#include "pose_conversion.h"
 
-#include <algorithm>
 #include <cctype>
-#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -12,7 +11,6 @@
 
 namespace {
 
-constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
 //这一部分也是哈基米写的
 
 // 将 A 组的 {position_m: [x,y,z], quaternion_xyzw: [x,y,z,w]} 转换为 KUKA 位姿（mm + ZYX 欧拉角 deg）
@@ -37,64 +35,26 @@ bool parse_pose_json(
 
     const auto &pos = pose_obj.at("position_m");
     const auto &quat = pose_obj.at("quaternion_xyzw");
-    for (std::size_t i = 0; i < 3; ++i) {
+    tool::RosPose pose;
+    for (std::size_t i = 0; i < pose.position_m.size(); ++i) {
         if (!pos[i].is_number()) {
             error_message = "position_m 元素必须为数值。";
             return false;
         }
+        pose.position_m[i] = pos[i].get<double>();
     }
-    for (std::size_t i = 0; i < 4; ++i) {
+    for (std::size_t i = 0; i < pose.quaternion_xyzw.size(); ++i) {
         if (!quat[i].is_number()) {
             error_message = "quaternion_xyzw 元素必须为数值。";
             return false;
         }
+        pose.quaternion_xyzw[i] = quat[i].get<double>();
     }
 
-    const double qx = quat[0].get<double>();
-    const double qy = quat[1].get<double>();
-    const double qz = quat[2].get<double>();
-    const double qw = quat[3].get<double>();
-    const double norm = std::sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
-    if (!std::isfinite(norm) || norm < 1e-9) {
+    if (!tool::ros_to_kuka_pose(pose, out_pose)) {
         error_message = "quaternion_xyzw 模长非法（不能为零向量或 NaN）。";
         return false;
     }
-
-    const double x = qx / norm;
-    const double y = qy / norm;
-    const double z = qz / norm;
-    const double w = qw / norm;
-
-    // 位置：m -> mm
-    out_pose.x = pos[0].get<double>() * 1000.0;
-    out_pose.y = pos[1].get<double>() * 1000.0;
-    out_pose.z = pos[2].get<double>() * 1000.0;
-
-    // 姿态：四元数 -> KUKA 内旋 ZYX 欧拉角（A=Yaw(Z), B=Pitch(Y), C=Roll(X)），单位 deg
-    const double sinp = std::clamp(2.0 * (w * y - z * x), -1.0, 1.0);
-    const double pitch_rad = std::asin(sinp);
-
-    double yaw_rad = 0.0;
-    double roll_rad = 0.0;
-    if (std::abs(sinp) >= 1.0 - 1e-7) {
-        // 万向节锁（B = ±90°）：固定 C = 0，直接从旋转矩阵元素求解 A，避免姿态失真
-        const double r01 = 2.0 * (x * y - w * z);
-        const double r11 = 1.0 - 2.0 * (x * x + z * z);
-        yaw_rad = std::atan2(-r01, r11);
-        roll_rad = 0.0;
-    } else {
-        const double sinr_cosp = 2.0 * (w * x + y * z);
-        const double cosr_cosp = 1.0 - 2.0 * (x * x + y * y);
-        roll_rad = std::atan2(sinr_cosp, cosr_cosp);
-
-        const double siny_cosp = 2.0 * (w * z + x * y);
-        const double cosy_cosp = 1.0 - 2.0 * (y * y + z * z);
-        yaw_rad = std::atan2(siny_cosp, cosy_cosp);
-    }
-
-    out_pose.a = yaw_rad * kRadToDeg;
-    out_pose.b = pitch_rad * kRadToDeg;
-    out_pose.c = roll_rad * kRadToDeg;
     return true;
 }
 

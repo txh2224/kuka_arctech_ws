@@ -1,6 +1,7 @@
 #ifndef ADAPTER_NODE_H
 #define ADAPTER_NODE_H
 
+#include "error_code.h"
 #include "job_validator.h"
 #include "krc_transport.h"
 #include "program_executor.h"
@@ -9,6 +10,7 @@
 #include "template_engine.h"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -60,6 +62,23 @@ private:
     rclcpp_action::CancelResponse cancel_callback(std::shared_ptr<ExecuteGoalHandle>);
 
     void accepted_callback(std::shared_ptr<ExecuteGoalHandle> goal_handle);
+
+    // 创建被拒绝的结果JSON
+    std::string make_rejected_result_json(
+        const ExecuteBackendJob::Goal &goal,
+        ErrorCode code,
+        const std::string &message) const;
+        
+    FeedbackCallback make_feedback_callback(
+        const std::shared_ptr<ExecuteGoalHandle> &goal_handle);
+
+    void publish_feedback(//发布任务执行的反馈信息
+        ExecuteGoalHandle &goal_handle,
+        uint8_t stage,
+        uint32_t current_index,
+        float progress,
+        const std::string &instruction_id,
+        const std::string &message);
 
     //停止服务回调与周期状态发布
     void stop_job_callback(
