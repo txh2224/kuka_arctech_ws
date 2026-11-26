@@ -70,20 +70,22 @@ Mock 成功路径下，这些字段全部由 [`build_mock_step_output()`](../src
 
 ### 3.2 步骤完成是靠计时，不是靠控制器反馈
 
-[`ProgramExecutor::execute()`](../src/kuka_arctech_adapter/src/program_executor.cpp#L371) 在 `start_program()` 之后逐步遍历 IR。每一步只是睡眠 `step_delay_ms_`（默认 50 ms，见 [program_executor.h:60](../src/kuka_arctech_adapter/include/program_executor.h#L60)），然后调用 `make_mock_step_json` 标记成功（[program_executor.cpp:425](../src/kuka_arctech_adapter/src/program_executor.cpp#L425)）。
+[`ProgramExecutor::execute()`](../src/kuka_arctech_adapter/src/program_executor.cpp#L30) 在 `start_program()` 之后逐步遍历 IR。每一步按 `step_delay_ms_` 模拟执行时长（默认 50 ms，见 [program_executor.h:60](../src/kuka_arctech_adapter/include/program_executor.h#L60)），到达模拟完成时间并通过停止和超时检查后，调用 `make_mock_step_json` 标记成功（[program_executor.cpp:411](../src/kuka_arctech_adapter/src/program_executor.cpp#L411)）。
 
 真机上，KRC 会一次性运行整个 `.src`，Adapter 需要知道程序当前执行到哪一步。可选做法：
 
 - 在每步运动前后生成写全局变量或输出位的 KRL 语句（例如写一个步骤计数变量），Adapter 轮询这个值。这需要同步修改模板引擎和静态检查的白名单。
 - 读取程序指针（当前行号），再与生成时记录的“步骤到行号”映射表对照。
 
-`timeout_ms` 超时检测目前也在这个睡眠循环里，改成轮询后要一并迁移。
+Mock 执行使用 `std::chrono::steady_clock` 计算完成时间与超时截止时间。每次唤醒先检查停止和超时，再判断步骤是否完成。同一时刻达到两者时判为超时。`timeout_ms=0` 表示不设截止时间。接入真机进度轮询时，需一并迁移超时检查。
+
+计时起点在故障检查、焊缝许可握手和执行进度反馈之后。握手耗时是否应计入 `timeout_ms`，仍需与 A 组确认。
 
 ### 3.3 成功执行路径只有 Mock 模拟结果
 
 当前成功执行路径仅支持 Mock 模拟结果，尚未建立真实观测数据到 Result 的生成路径。
 
-执行器已有模式保护：[program_executor.cpp:117](../src/kuka_arctech_adapter/src/program_executor.cpp#L117) 对 `MOCK`、`MANUAL` 以外的模式直接以 `KA_PROGRAM_START_FAILED` 失败，Manual 模式在导出后提前返回（见第 1 节）。因此 `make_mock_step_json` 的两处调用（[:168](../src/kuka_arctech_adapter/src/program_executor.cpp#L168) 只读查询路径，[:425](../src/kuka_arctech_adapter/src/program_executor.cpp#L425) 运动路径）实际只有 Mock 能走到，目前不存在 Verified 模式返回伪造数据的问题。[:426](../src/kuka_arctech_adapter/src/program_executor.cpp#L426) 中非 Mock 的 `"completed"` 分支目前走不到。
+执行器已有模式保护：[program_executor.cpp:117](../src/kuka_arctech_adapter/src/program_executor.cpp#L117) 对 `MOCK`、`MANUAL` 以外的模式直接以 `KA_PROGRAM_START_FAILED` 失败，Manual 模式在导出后提前返回（见第 1 节）。因此 `make_mock_step_json` 的两处调用（[:168](../src/kuka_arctech_adapter/src/program_executor.cpp#L168) 只读查询路径，[:411](../src/kuka_arctech_adapter/src/program_executor.cpp#L411) 运动路径）实际只有 Mock 能走到，目前不存在 Verified 模式返回伪造数据的问题。[:412](../src/kuka_arctech_adapter/src/program_executor.cpp#L412) 中非 Mock 的 `"completed"` 分支目前走不到。
 
 接入 Verified 模式时：
 
@@ -93,7 +95,7 @@ Mock 成功路径下，这些字段全部由 [`build_mock_step_output()`](../src
 
 ### 3.4 运行状态由执行器写入，不是从控制器读取
 
-执行器通过 `set_runtime_state()` 主动设置 `RUNNING`/`WELDING`/`IDLE`（例如 [program_executor.cpp:429](../src/kuka_arctech_adapter/src/program_executor.cpp#L429)），`/adapter/kuka_arctech/status` 发布的就是这个值。接入真机后，`program_state` 和 `weld_state` 应以控制器回读为准，`set_runtime_state` 在 Verified 实现中应为空操作（接口注释已有此约定）。
+执行器通过 `set_runtime_state()` 主动设置 `RUNNING`/`WELDING`/`IDLE`（例如 [program_executor.cpp:415](../src/kuka_arctech_adapter/src/program_executor.cpp#L415)），`/adapter/kuka_arctech/status` 发布的就是这个值。接入真机后，`program_state` 和 `weld_state` 应以控制器回读为准，`set_runtime_state` 在 Verified 实现中应为空操作（接口注释已有此约定）。
 
 ### 3.5 焊接安全相关逻辑不完整
 
@@ -104,6 +106,42 @@ Mock 成功路径下，这些字段全部由 [`build_mock_step_output()`](../src
 | `lease_ms` 只做了校验，没有执行 | `job_validator.cpp` 只检查非零 | 没有租约计时，到期也不会自动收弧或停机 |
 | 故障只在每步开始前检查 | [program_executor.cpp:290](../src/kuka_arctech_adapter/src/program_executor.cpp#L290) | 步骤执行中发生的故障要等到下一步才会发现 |
 | 停机结果是模拟的 | `MockKrcTransport::stop_program` | 真机需回读程序状态，确认已停止后才返回成功 |
+
+#### 跨 Goal 的工艺状态（A/B 协议待确认）
+
+现状：工艺状态只在单个 Goal 内有效。
+
+- validator 要求同一 Goal 内配方选择（WLD-003）在起弧之前，起弧与收弧成对出现（[job_validator.cpp:244-269](../src/kuka_arctech_adapter/src/job_validator.cpp#L244-L269)）。
+- 执行器在每个 Goal 结束时把状态置为 `IDLE`/`ARC_OFF`，不在 Goal 之间保留配方、电弧和焊缝许可。
+
+因此，如果 A 组把配方选择、起弧、路径跟随、收弧分别作为独立 Goal 下发，当前会被校验拒绝。
+
+如果协议确定要支持拆分下发，B 组需要：
+
+- 维护跨 Goal 的真实工艺状态：当前生效的配方、电弧是否已建立、哪个 seam 持有许可。状态应以设备回读为准。
+- 让电弧租约 `lease_ms` 跨 Goal 计时，租约到期且没有续约时，自动收弧并停机。
+- 定义 Goal 之间的异常处理：A 组断连、取消，或在电弧未关闭时下发了无关作业。
+- 调整单作业锁：起弧后只接受同一 seam 的后续 Goal。
+- 确认 ArcTech 是否允许电弧跨 KRL 程序保持。如果不允许，拆分的 Goal 只能先在 Adapter 内部合并，再一次性生成程序，这会改变“每个 Goal 独立返回结果”的语义。
+
+### 3.6 执行约束与结果契约尚未参与判定
+
+`SemanticMapper` 只校验这三个字段是合法的 JSON 对象，然后原样存入 IR（[semantic_mapper.cpp:267-299](../src/kuka_arctech_adapter/src/semantic_mapper.cpp#L267-L299)），再写进调试记录。执行器和结果生成都不读取它们。
+
+| 字段 | 当前用途 | 尚未落实 |
+| --- | --- | --- |
+| `constraint_json` | 只读取 `settle_duration_ms`，并在 Mock 结果中原样回填 | `max_state_age_ms`、`joint_tolerance_rad`、`settle_velocity_rad_s`、`position_tolerance_m`、`orientation_tolerance_rad`、`max_path_deviation_m` 都没有用于任何判定 |
+| `safety_json` | 无 | `policy_id`、`applied_bundle_ids`、`constraint_revision` 没有对应的后端执行条件，例如拒绝未知的 `policy_id` |
+| `result_contract_json` | 无 | `completion_condition` 和 `required_outputs` 没有参与成功判定。Mock 输出字段按指令类型写死，不读取 `required_outputs`，也不做校验 |
+
+接入真机后，一个步骤只有同时满足以下条件才能判为成功：
+
+1. `completion_condition` 对应的真实条件成立（`target_reached`、`path_completed`、`arc_established` 等）。
+2. `required_outputs` 中的字段全部由真实数据填充。
+3. 误差在 `constraint_json` 的容差之内。
+4. 观测数据的时间不早于 `max_state_age_ms`。
+
+任一条件不满足，都返回失败。需要与 A 组确认：遇到未知的 `completion_condition`、`policy_id` 或不兼容的 `contract_version` 时，是拒绝作业还是忽略。
 
 ## 4. Mock 模式可注入的故障
 
@@ -126,9 +164,10 @@ Mock 成功路径下，这些字段全部由 [`build_mock_step_output()`](../src
 
 | 优先级 | 问题 | 位置 | 建议 |
 | --- | --- | --- | --- |
+| 实机运动阻断 | 速度、加速度的换算基准是假设值：关节速度以 3.14 rad/s 为 100%，关节加速度以 10 rad/s² 为 100%，直线加速度以 5 m/s² 为 100%。KUKA 的 `SVEL_JOINT` 百分比是相对每根轴各自的最大速度，各轴不同，统一基准会让各轴实际速度与请求不符。另外存在下限抬速：百分比被 clamp 到至少 1%，直线速度被 `std::max` 到至少 0.001 m/s，请求低于下限时，实际速度会高于 A 组请求 | [template_engine.cpp:279-282、314-316、350](../src/kuka_arctech_adapter/src/template_engine.cpp#L279-L316) | 按目标控制器机器数据中各轴的最大速度、最大加速度和 CP 加速度上限设定基准（做成配置项，具体参数以现场 KSS 版本文档为准）。按各轴最大速度中的最高值换算，保证任一轴都不超过请求。请求低于下限时拒绝作业，不要抬高速度 |
 | 高 | 外部字符串原样写进 KRL 注释，换行符可以注入代码 | `TemplateEngine::render` 中的 `JOB_ID`、`TRACE_ID`、`instance_id`、`start_profile_id`、`crater_profile_id` | validator 中限制为可打印 ASCII，并禁止 `{`、`}` |
 | 高（待确认） | 只含 ROB-011/015 的作业第一条运动是 SLIN，真机上可能触发 BCO 运行 | 模板中去掉了真机导出里的 `SPTP XHOME` | 先确认 KSS 的 BCO 要求、程序启动时的起始姿态和启动条件，再决定处理方式。**不能直接在程序首尾加 HOME**：A 组的指令序列未必要求回 HOME，自行增加运动会改变执行轨迹，并可能引入新的碰撞风险。可讨论的方向包括由 A 组在序列开头给出 ROB-010，或由 validator 拒绝不满足启动条件的作业 |
-| 高（待研究） | ROB-015 路径点之间没有圆滑过渡，每点都会精确暂停，实焊时可能影响焊缝连续性 | `FollowPathStep` 分支生成的 `SLIN` 没有 `C_SPL` | `C_SPL` 或 `SPLINE ... ENDSPLINE` 可以研究，但**不能直接套用**：圆滑过渡会让实际路径偏离路径点，而 A 组规定了 `max_path_deviation_m`（`sim_A/config` 的样例中为 0.001 m）。需要同时权衡焊接连续性和路径精度，例如按偏差上限限制圆滑距离，并用真实轨迹采样（3.1）验证偏差。LDAT 里照抄的 `APO_DIST 500`（mm）在没有 `C_SPL` 时不生效，一旦启用圆滑必须按偏差上限重新设定 |
+| 高（待研究） | ROB-015 路径点之间没有圆滑过渡，每点都会精确暂停，实焊时可能影响焊缝连续性 | `FollowPathStep` 分支生成的 `SLIN` 没有 `C_SPL` | `C_SPL` 或 `SPLINE ... ENDSPLINE` 可以研究，但**不能直接套用**：圆滑过渡会让实际路径偏离路径点，而 A 组规定了 `max_path_deviation_m`（`sim_A/config/job_8steps_demo.json` 中 ROB-015 为 0.002 m，ROB-011 为 0.001 m）。需要同时权衡焊接连续性和路径精度，例如按偏差上限限制圆滑距离，并用真实轨迹采样（3.1）验证偏差。LDAT 里照抄的 `APO_DIST 500`（mm）在没有 `C_SPL` 时不生效，一旦启用圆滑必须按偏差上限重新设定 |
 | 实焊阻断（离线开发可暂缓） | `straight_weld` 是占位模板，没有真实 ARCON/ARCOFF/WDAT | `templates/kss8_arctech38/straight_weld/` | 在示教器上录制焊接程序后替换。当前离线开发阶段可以暂缓；但没有它就不能做实焊验收 |
 | 中 | 姿态和关节零位约定未与 A 组确认 | `ros_to_kuka_pose`、`resolve_krl_axis_values` | 确认工具作业方向（KUKA 为 +X，ROS 常用 +Z）以及轴角零位和正方向 |
 | 中 | `dry_run_motion` 标记为 `verified_on_krc: true`，但改写后的模板本身没在 KRC 上加载过 | `template_manifest.json` | 先导入一份生成程序到示教器，确认能加载、能空跑，再保留 true |
@@ -138,9 +177,10 @@ Mock 成功路径下，这些字段全部由 [`build_mock_step_output()`](../src
 
 ## 6. 建议的接入顺序
 
-1. 修复字符串注入问题；与 A 组确认 BCO 和起始姿态的处理方式。用 Manual 模式导出一份程序，在示教器上加载并以 T1 低速空跑。
+0. 先修复 KRL 注释中的字符串注入问题（第 5 节）。
+1. 按目标控制器参数确定速度、加速度换算基准（第 5 节，实机运动阻断项），并与 A 组确认 BCO 和起始姿态的处理方式。用 Manual 模式导出一份程序，在示教器上加载并以 T1 低速空跑。
 2. 确定数据链路，扩充 `IKrcTransport`（3.1），实现 `VerifiedKrcTransport` 的探活、部署、启停和状态回读。
-3. 改造执行器：用控制器进度替代计时（3.2），建立真实观测数据到 Result 的路径并保留现有模式保护（3.3），状态改为从控制器读取（3.4）。
+3. 改造执行器：用控制器进度替代计时（3.2），建立真实观测数据到 Result 的路径并保留现有模式保护（3.3），状态改为从控制器读取（3.4），让约束和结果契约参与成功判定（3.6）。
 4. 有了真实轨迹采样后，评估 ROB-015 圆滑过渡在 `max_path_deviation_m` 内是否可行。
-5. 接入焊接链路：焊缝许可的授予与收回、`lease_ms` 租约、过程量采集（3.5）。
+5. 与 A 组确认是否拆分 Goal 下发工艺步骤（3.5）。然后接入焊接链路：焊缝许可的授予与收回、`lease_ms` 租约、过程量采集（3.5）。
 6. 录制真实焊接黄金模板，替换 `straight_weld`（实焊阻断项），再做实焊验收（KA-T10 ~ KA-T12）。

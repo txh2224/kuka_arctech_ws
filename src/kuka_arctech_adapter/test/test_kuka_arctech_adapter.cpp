@@ -395,6 +395,37 @@ TEST(KukaArcTechAdapterTest, KA_T08_StepTimeoutTriggersStop) {
     EXPECT_EQ(res.error_code, ErrorCode::KA_PROGRAM_TIMEOUT);
 }
 
+TEST(KukaArcTechAdapterTest, StepTimeoutCrossedDuringFinalWaitTriggersStop) {
+    auto goal = make_goal("timeout_final_wait");
+    auto timed_step = make_joint_inst("inst_timeout");
+    timed_step.timeout_ms = 5;
+    goal.instructions.push_back(timed_step);
+    goal.instructions.push_back(make_joint_inst("inst_remaining"));
+
+    SemanticMapper mapper;
+    KukaArcTechJobIR ir;
+    std::string error_message;
+    ASSERT_EQ(mapper.map(goal, ir, error_message), ErrorCode::OK) << error_message;
+
+    auto transport = std::make_shared<MockKrcTransport>();
+    // 单步模拟耗时小于 10 ms 的轮询间隔，超时发生在唯一一次等待期间。
+    ProgramExecutor executor(transport, 9);
+    std::atomic<bool> stop_flag{false};
+    const auto result = executor.execute(ir, stop_flag, nullptr);
+
+    EXPECT_EQ(result.outcome, ExecutionOutcome::FAILED);
+    EXPECT_EQ(result.error_code, ErrorCode::KA_PROGRAM_TIMEOUT);
+    EXPECT_EQ(transport->read_status().program_state, "STOPPED");
+
+    const auto doc = nlohmann::json::parse(result.result_json);
+    const auto &steps = doc.at("step_results");
+    ASSERT_EQ(steps.size(), 2u);
+    EXPECT_EQ(steps[0].at("state").get<std::string>(), "FAILED");
+    EXPECT_EQ(steps[0].at("error_code").get<std::string>(), "KA_PROGRAM_TIMEOUT");
+    EXPECT_EQ(steps[1].at("instance_id").get<std::string>(), "inst_remaining");
+    EXPECT_EQ(steps[1].at("state").get<std::string>(), "SKIPPED");
+}
+
 // KA-T09: 停机确认、停机失败归并 KA_STOP_FAILED、Manual 模式语义与原子落盘
 TEST(KukaArcTechAdapterTest, KA_T09_StopFailedNormalizationAndManualSemantics) {
     SemanticMapper mapper;

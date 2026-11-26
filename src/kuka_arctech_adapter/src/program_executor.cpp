@@ -366,60 +366,46 @@ ExecutionResult ProgramExecutor::execute(
                 mode + " step active");
         }
 
-        // 分段小睡以便及时响应取消/停止请求与单步超时（timeout_ms）
-        const auto step_start_tp = std::chrono::steady_clock::now();
-        if (step_delay_ms_ > 0) {
-            const uint32_t slice_ms = 10;
-            uint32_t elapsed = 0;
-            while (elapsed < step_delay_ms_) {
-                if (stop_requested.load()) {
-                    return handle_stop_at_step(i, "作业在执行过程中已按请求停止。");
-                }
-                if (step.timeout_ms > 0) {
-                    const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                             std::chrono::steady_clock::now() - step_start_tp)
-                                             .count();
-                    if (wall_ms >= static_cast<int64_t>(step.timeout_ms)) {
-                        const std::string timeout_msg =
-                            "步骤 " + step.instruction_id + " 执行超过 timeout_ms=" +
-                            std::to_string(step.timeout_ms) + "ms，已触发停机。";
-                        const auto stop_res = stop_transport_once();
-                        if (!stop_res.ok) {
-                            const std::string combined_msg =
-                                timeout_msg + "；且后续停止失败：" + stop_res.message;
-                            const std::string combined_ev =
-                                "timeout_ms=" + std::to_string(step.timeout_ms) +
-                                "; stop_failed=" + stop_res.raw_evidence;
-                            append_step_terminal(
-                                step, "FAILED", ErrorCode::KA_STOP_FAILED, combined_msg, combined_ev);
-                            fill_remaining_steps(
-                                i + 1, "SKIPPED", ErrorCode::OK, "因前序步骤超时且停机失败而跳过。");
-                            return finalize_failed(
-                                ErrorCode::KA_STOP_FAILED, combined_msg, combined_ev);
-                        }
-                        append_step_terminal(
-                            step,
-                            "FAILED",
-                            ErrorCode::KA_PROGRAM_TIMEOUT,
-                            timeout_msg,
-                            "timeout_ms=" + std::to_string(step.timeout_ms));
-                        fill_remaining_steps(
-                            i + 1, "SKIPPED", ErrorCode::OK, "因前序步骤执行超时而跳过。");
-                        return finalize_failed(
-                            ErrorCode::KA_PROGRAM_TIMEOUT,
-                            timeout_msg,
-                            "timeout_ms=" + std::to_string(step.timeout_ms));
-                    }
-                }
-                const uint32_t wait_ms = std::min(slice_ms, step_delay_ms_ - elapsed);
-                std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
-                elapsed += wait_ms;
-            }
-        }
+        // 每次唤醒先检查停止和超时，再判断模拟步骤是否完成。
+        using Clock = std::chrono::steady_clock;
+        constexpr auto check_interval = std::chrono::milliseconds(10);
+        const auto step_start = Clock::now();
+        const auto step_finish = step_start + std::chrono::milliseconds(step_delay_ms_);
+        const auto step_deadline = step.timeout_ms == 0
+            ? Clock::time_point::max()
+            : step_start + std::chrono::milliseconds(step.timeout_ms);
 
-        // 记录步骤完成前再次确认是否收到停止请求，防止最后一步误报 SUCCEEDED
-        if (stop_requested.load()) {
-            return handle_stop_at_step(i, "作业在执行过程中已按请求停止。");
+        while (true) {
+            if (stop_requested.load()) {
+                return handle_stop_at_step(i, "作业在执行过程中已按请求停止。");
+            }
+            const auto now = Clock::now();
+            if (now >= step_deadline) {
+                const std::string timeout_evidence = "timeout_ms=" + std::to_string(step.timeout_ms);
+                const std::string timeout_msg =
+                    "步骤 " + step.instruction_id + " 执行超过 " + timeout_evidence + "ms，已触发停机。";
+                const auto stop_res = stop_transport_once();
+                if (!stop_res.ok) {
+                    const std::string combined_msg =
+                        timeout_msg + "；且后续停止失败：" + stop_res.message;
+                    const std::string combined_ev =
+                        timeout_evidence + "; stop_failed=" + stop_res.raw_evidence;
+                    append_step_terminal(
+                        step, "FAILED", ErrorCode::KA_STOP_FAILED, combined_msg, combined_ev);
+                    fill_remaining_steps(
+                        i + 1, "SKIPPED", ErrorCode::OK, "因前序步骤超时且停机失败而跳过。");
+                    return finalize_failed(ErrorCode::KA_STOP_FAILED, combined_msg, combined_ev);
+                }
+                append_step_terminal(
+                    step, "FAILED", ErrorCode::KA_PROGRAM_TIMEOUT, timeout_msg, timeout_evidence);
+                fill_remaining_steps(
+                    i + 1, "SKIPPED", ErrorCode::OK, "因前序步骤执行超时而跳过。");
+                return finalize_failed(ErrorCode::KA_PROGRAM_TIMEOUT, timeout_msg, timeout_evidence);
+            }
+            if (now >= step_finish) {
+                break;
+            }
+            std::this_thread::sleep_until(std::min({now + check_interval, step_deadline, step_finish}));
         }
 
         result_doc["step_results"].push_back(utils::make_mock_step_json(
