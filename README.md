@@ -257,9 +257,6 @@ ros2 service call /adapter/kuka_arctech/stop_job \
   atomic_adapter_interfaces/srv/StopBackendJob \
   '{job_id: "job_mock_002"}'
 
-# （可选）以 ROS 2 组件容器方式动态加载 AdapterNode
-ros2 run rclcpp_components component_container
-ros2 component load /ComponentManager kuka_arctech_adapter AdapterNode
 ```
 
 ### 4. 查看全链路调试记录（`debug/*.jsonl`）
